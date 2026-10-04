@@ -60,7 +60,7 @@ install() {
 mkdir -p "$root/fresh"
 install fresh '' "$root/new" || fail 'fresh install failed'
 assert_same "$root/new" "$root/fresh/.config/herdr/config.toml"
-assert_backups "$root/fresh/.config/herdr/config.toml" 0
+assert_backups "$root/fresh/.config/herdr/backups/config.toml" 0
 assert_same "$root/utility" "$root/fresh/.local/bin/herdr-config"
 [ -x "$root/fresh/.local/bin/herdr-config" ] || fail 'utility not executable'
 printf 'ok: fresh install provisions utility\n'
@@ -68,11 +68,14 @@ printf 'ok: fresh install provisions utility\n'
 mkdir -p "$root/existing/.config/herdr"
 printf 'original configuration\n' > "$root/old"
 cp "$root/old" "$root/existing/.config/herdr/config.toml"
+touch -t 202001010000 "$root/existing/.config/herdr/config.toml"
 install existing '' "$root/new" || fail 'replacement failed'
 assert_same "$root/new" "$root/existing/.config/herdr/config.toml"
-assert_backups "$root/existing/.config/herdr/config.toml" 1
-for backup in "$root/existing/.config/herdr/config.toml".bak.*; do
+assert_backups "$root/existing/.config/herdr/backups/config.toml" 1
+for backup in "$root/existing/.config/herdr/backups/config.toml".bak.*; do
     assert_same "$root/old" "$backup"
+    year=$(stat -f '%Sm' -t '%Y' "$backup" 2>/dev/null || stat -c '%y' "$backup" | cut -c1-4)
+    [ "$year" = "$(date +%Y)" ] || fail 'installer backup kept old source mtime'
 done
 printf 'ok: backup before replacement\n'
 
@@ -80,14 +83,14 @@ mkdir -p "$root/failure/.config/herdr"
 cp "$root/old" "$root/failure/.config/herdr/config.toml"
 if install failure '' "$root/new" 1; then fail 'fetch failure returned success'; fi
 assert_same "$root/old" "$root/failure/.config/herdr/config.toml"
-assert_backups "$root/failure/.config/herdr/config.toml" 0
+assert_backups "$root/failure/.config/herdr/backups/config.toml" 0
 printf 'ok: failed fetch leaves existing config unchanged\n'
 mkdir -p "$root/utility-failure/.config/herdr"
 cp "$root/old" "$root/utility-failure/.config/herdr/config.toml"
 if HOME="$root/utility-failure" FETCH_SOURCE="$root/new" UTILITY_FAIL=1 \
     PATH="$root/bin:$PATH" sh "$repo/install.sh"; then fail 'utility fetch failure returned success'; fi
 assert_same "$root/old" "$root/utility-failure/.config/herdr/config.toml"
-assert_backups "$root/utility-failure/.config/herdr/config.toml" 0
+assert_backups "$root/utility-failure/.config/herdr/backups/config.toml" 0
 [ ! -e "$root/utility-failure/.local/bin/herdr-config" ] || fail 'partial utility installed'
 printf 'ok: failed utility fetch leaves destinations unchanged\n'
 
@@ -100,8 +103,8 @@ if HOME="$root/move-failure" FETCH_SOURCE="$root/new" FAIL_CONFIG_MOVE=1 \
     PATH="$root/bin:$PATH" sh "$repo/install.sh"; then fail 'second move failure returned success'; fi
 assert_same "$root/old" "$root/move-failure/.config/herdr/config.toml"
 assert_same "$root/old-utility" "$root/move-failure/.local/bin/herdr-config"
-assert_backups "$root/move-failure/.config/herdr/config.toml" 1
-assert_backups "$root/move-failure/.local/bin/herdr-config" 1
+assert_backups "$root/move-failure/.config/herdr/backups/config.toml" 1
+assert_backups "$root/move-failure/.config/herdr/backups/herdr-config" 1
 printf 'ok: second move failure rolls back utility and preserves backups\n'
 
 mkdir -p "$root/linked-file/.config/herdr" "$root/outside-file"
@@ -109,7 +112,7 @@ cp "$root/old" "$root/outside-file/config.toml"
 ln -s "$root/outside-file/config.toml" "$root/linked-file/.config/herdr/config.toml"
 if install linked-file '' "$root/new"; then fail 'symlinked config accepted'; fi
 assert_same "$root/old" "$root/outside-file/config.toml"
-assert_backups "$root/linked-file/.config/herdr/config.toml" 0
+assert_backups "$root/linked-file/.config/herdr/backups/config.toml" 0
 [ "$(find "$root/linked-file/.config/herdr" ! -path "$root/linked-file/.config/herdr" | wc -l | tr -d ' ')" -eq 1 ] || fail 'symlinked config gained files'
 printf 'ok: symlinked config refused without backup or writes\n'
 
@@ -118,7 +121,7 @@ cp "$root/old" "$root/outside-dir/config.toml"
 ln -s "$root/outside-dir" "$root/linked-dir/.config/herdr"
 if install linked-dir '' "$root/new"; then fail 'symlinked herdr directory accepted'; fi
 assert_same "$root/old" "$root/outside-dir/config.toml"
-assert_backups "$root/outside-dir/config.toml" 0
+assert_backups "$root/outside-dir/backups/config.toml" 0
 [ "$(find "$root/outside-dir" ! -path "$root/outside-dir" | wc -l | tr -d ' ')" -eq 1 ] || fail 'symlinked directory gained files'
 [ -L "$root/linked-dir/.config/herdr" ] || fail 'herdr directory symlink changed'
 printf 'ok: symlinked herdr directory refused without outside writes\n'
@@ -144,9 +147,9 @@ printf 'ok: XDG_CONFIG_HOME respected\n'
 
 install existing '' "$root/updated" || fail 'repeated install failed'
 assert_same "$root/updated" "$root/existing/.config/herdr/config.toml"
-assert_backups "$root/existing/.config/herdr/config.toml" 2
+assert_backups "$root/existing/.config/herdr/backups/config.toml" 2
 found_first=0
-for backup in "$root/existing/.config/herdr/config.toml".bak.*; do
+for backup in "$root/existing/.config/herdr/backups/config.toml".bak.*; do
     if cmp -s "$root/new" "$backup"; then found_first=1; fi
 done
 [ "$found_first" -eq 1 ] || fail 'first install not preserved on repeat'

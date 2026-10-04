@@ -49,7 +49,7 @@ printf '[core]\n\thooksPath = %s\n\tfsmonitor = %s\n' "$root/hooks" "$root/hooks
     run ) || fail 'fast-forward with ambient Git config failed'
 [ ! -e "$root/hook-ran" ] || fail 'ambient Git config or checkout hook executed'
 [ "$(cat "$root/xdg/herdr/config.toml")" = 'next config' ] || fail 'updated deploy'
-[ "$(cat "$root/xdg/herdr/config.toml".bak.*)" = 'initial config' ] || fail 'missing backup'
+[ "$(cat "$root/xdg/herdr/backups/config.toml".bak.*)" = 'initial config' ] || fail 'missing backup'
 # Inject a pull failure while retaining a valid origin and checkout.
 mkdir "$root/bin"
 cat > "$root/bin/git" <<'GIT'
