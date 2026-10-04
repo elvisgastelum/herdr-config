@@ -8,17 +8,37 @@ trap 'exit 1' 1 2 3 15
 mkdir -p "$root/bin"
 cat > "$root/bin/curl" <<'CURL'
 #!/bin/sh
-[ "$#" -eq 4 ] && [ "$1" = -fsSL ] && [ "$2" = -o ] &&
-    [ "$4" = https://raw.githubusercontent.com/elvisgastelum/herdr-config/main/config.toml ] || exit 91
-if [ "${FETCH_FAIL:-0}" = 1 ]; then
-    printf 'partial download\n' > "$3"
-    exit 22
-fi
-cp "$FETCH_SOURCE" "$3"
+[ "$#" -eq 4 ] && [ "$1" = -fsSL ] && [ "$2" = -o ] || exit 91
+case $4 in
+    https://raw.githubusercontent.com/elvisgastelum/herdr-config/main/config.toml)
+        if [ "${FETCH_FAIL:-0}" = 1 ]; then
+            printf 'partial download\n' > "$3"
+            exit 22
+        fi
+        cp "$FETCH_SOURCE" "$3" ;;
+    https://raw.githubusercontent.com/elvisgastelum/herdr-config/main/bin/herdr-config)
+        if [ "${UTILITY_FAIL:-0}" = 1 ]; then
+            printf 'partial utility\n' > "$3"
+            exit 22
+        fi
+        cp "$UTILITY_SOURCE" "$3" ;;
+    *) exit 91 ;;
+esac
 CURL
 chmod +x "$root/bin/curl"
+# Fail only the second deployment move, after the utility was replaced.
+cat > "$root/bin/mv" <<'MV'
+#!/bin/sh
+if [ "${FAIL_CONFIG_MOVE:-0}" = 1 ] && [ "$3" = "$CONFIG_MOVE_TARGET" ]; then exit 73; fi
+exec "$MV_REAL" "$@"
+MV
+chmod +x "$root/bin/mv"
+MV_REAL=$(command -v mv)
+export MV_REAL
 printf 'new configuration\n' > "$root/new"
 printf 'updated configuration\n' > "$root/updated"
+printf '#!/bin/sh\nexit 0\n' > "$root/utility"
+export UTILITY_SOURCE="$root/utility"
 
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 assert_same() { cmp -s "$1" "$2" || fail "different content: $1"; }
@@ -41,7 +61,9 @@ mkdir -p "$root/fresh"
 install fresh '' "$root/new" || fail 'fresh install failed'
 assert_same "$root/new" "$root/fresh/.config/herdr/config.toml"
 assert_backups "$root/fresh/.config/herdr/config.toml" 0
-printf 'ok: fresh install\n'
+assert_same "$root/utility" "$root/fresh/.local/bin/herdr-config"
+[ -x "$root/fresh/.local/bin/herdr-config" ] || fail 'utility not executable'
+printf 'ok: fresh install provisions utility\n'
 
 mkdir -p "$root/existing/.config/herdr"
 printf 'original configuration\n' > "$root/old"
@@ -60,6 +82,27 @@ if install failure '' "$root/new" 1; then fail 'fetch failure returned success';
 assert_same "$root/old" "$root/failure/.config/herdr/config.toml"
 assert_backups "$root/failure/.config/herdr/config.toml" 0
 printf 'ok: failed fetch leaves existing config unchanged\n'
+mkdir -p "$root/utility-failure/.config/herdr"
+cp "$root/old" "$root/utility-failure/.config/herdr/config.toml"
+if HOME="$root/utility-failure" FETCH_SOURCE="$root/new" UTILITY_FAIL=1 \
+    PATH="$root/bin:$PATH" sh "$repo/install.sh"; then fail 'utility fetch failure returned success'; fi
+assert_same "$root/old" "$root/utility-failure/.config/herdr/config.toml"
+assert_backups "$root/utility-failure/.config/herdr/config.toml" 0
+[ ! -e "$root/utility-failure/.local/bin/herdr-config" ] || fail 'partial utility installed'
+printf 'ok: failed utility fetch leaves destinations unchanged\n'
+
+mkdir -p "$root/move-failure/.config/herdr" "$root/move-failure/.local/bin"
+cp "$root/old" "$root/move-failure/.config/herdr/config.toml"
+printf 'original utility\n' > "$root/old-utility"
+cp "$root/old-utility" "$root/move-failure/.local/bin/herdr-config"
+if HOME="$root/move-failure" FETCH_SOURCE="$root/new" FAIL_CONFIG_MOVE=1 \
+    CONFIG_MOVE_TARGET="$root/move-failure/.config/herdr/config.toml" MV_REAL="$(command -v mv)" \
+    PATH="$root/bin:$PATH" sh "$repo/install.sh"; then fail 'second move failure returned success'; fi
+assert_same "$root/old" "$root/move-failure/.config/herdr/config.toml"
+assert_same "$root/old-utility" "$root/move-failure/.local/bin/herdr-config"
+assert_backups "$root/move-failure/.config/herdr/config.toml" 1
+assert_backups "$root/move-failure/.local/bin/herdr-config" 1
+printf 'ok: second move failure rolls back utility and preserves backups\n'
 
 mkdir -p "$root/linked-file/.config/herdr" "$root/outside-file"
 cp "$root/old" "$root/outside-file/config.toml"
@@ -79,6 +122,18 @@ assert_backups "$root/outside-dir/config.toml" 0
 [ "$(find "$root/outside-dir" ! -path "$root/outside-dir" | wc -l | tr -d ' ')" -eq 1 ] || fail 'symlinked directory gained files'
 [ -L "$root/linked-dir/.config/herdr" ] || fail 'herdr directory symlink changed'
 printf 'ok: symlinked herdr directory refused without outside writes\n'
+mkdir -p "$root/linked-parent" "$root/outside-parent"
+ln -s "$root/outside-parent" "$root/linked-parent/.config"
+if install linked-parent '' "$root/new"; then fail 'symlinked config parent accepted'; fi
+[ ! -e "$root/outside-parent/herdr/config.toml" ] || fail 'symlinked parent wrote outside'
+printf 'ok: symlinked config parent refused\n'
+mkdir -p "$root/linked-utility/.local/bin" "$root/utility-outside"
+printf 'original utility\n' > "$root/utility-outside/herdr-config"
+ln -s "$root/utility-outside/herdr-config" "$root/linked-utility/.local/bin/herdr-config"
+if install linked-utility '' "$root/new"; then fail 'symlinked utility accepted'; fi
+[ "$(cat "$root/utility-outside/herdr-config")" = 'original utility' ] || fail 'symlink target changed'
+[ ! -e "$root/linked-utility/.config/herdr/config.toml" ] || fail 'config installed despite unsafe utility'
+printf 'ok: symlinked utility refused\n'
 
 mkdir -p "$root/xdg" "$root/xdg-home"
 HOME="$root/xdg-home" XDG_CONFIG_HOME="$root/xdg" FETCH_SOURCE="$root/new" \
