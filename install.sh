@@ -1,53 +1,105 @@
 #!/bin/sh
-# Install only the published Herdr config.toml, without reading piped stdin.
+# Install the published Herdr config and sync utility without reading piped stdin.
 set -eu
-
-url=https://raw.githubusercontent.com/elvisgastelum/herdr-config/main/config.toml
+base=https://raw.githubusercontent.com/elvisgastelum/herdr-config/main
 if [ -n "${XDG_CONFIG_HOME:-}" ]; then
     config_home=$XDG_CONFIG_HOME
 else
-    config_home=${HOME:?HOME must be set when XDG_CONFIG_HOME is unset}/.config
+    config_home=${HOME:?HOME must be set}/.config
 fi
+home=${HOME:?HOME must be set}
 config_dir=$config_home/herdr
-target=$config_dir/config.toml
+config_target=$config_dir/config.toml
+bin_dir=$home/.local/bin
+utility_target=$bin_dir/herdr-config
 
-if [ -L "$config_dir" ]; then
-    printf 'Refusing symlinked Herdr config directory: %s\n' "$config_dir" >&2
-    exit 1
+# Both overrides must name regular files in the same trusted checkout. Sync uses
+# these only after checking the checkout's origin and branch.
+if [ -n "${HERDR_CONFIG_SOURCE:-}" ] || [ -n "${HERDR_UTILITY_SOURCE:-}" ]; then
+    [ -n "${HERDR_CONFIG_SOURCE:-}" ] && [ -n "${HERDR_UTILITY_SOURCE:-}" ] &&
+        [ -f "$HERDR_CONFIG_SOURCE" ] && [ ! -L "$HERDR_CONFIG_SOURCE" ] &&
+        [ -f "$HERDR_UTILITY_SOURCE" ] && [ ! -L "$HERDR_UTILITY_SOURCE" ] || {
+        printf 'Both source overrides must be regular, non-symlink files.\n' >&2
+        exit 1
+    }
 fi
-mkdir -p "$config_dir"
-if [ -L "$config_dir" ] || [ -L "$target" ]; then
-    printf 'Refusing symlinked Herdr config directory or file: %s\n' "$target" >&2
-    exit 1
-fi
-tmp=$(mktemp "$target.tmp.XXXXXX")
-trap 'rm -f "$tmp"' 0
+# Check the caller-controlled parents as well as the immediate destinations.
+# More distant system ancestors are outside this installer's ownership.
+for dir in "$home" "$config_home" "$home/.local" "$config_dir" "$bin_dir"; do
+    if [ -L "$dir" ]; then
+        printf 'Refusing symlinked destination directory: %s\n' "$dir" >&2
+        exit 1
+    fi
+done
+mkdir -p "$config_dir" "$bin_dir"
+check_destinations() {
+    for path in "$config_dir" "$bin_dir" "$config_target" "$utility_target"; do
+        if [ -L "$path" ]; then
+            printf 'Refusing symlinked destination: %s\n' "$path" >&2
+            return 1
+        fi
+    done
+    for path in "$config_target" "$utility_target"; do
+        if [ -e "$path" ] && [ ! -f "$path" ]; then
+            printf 'Refusing non-file destination: %s\n' "$path" >&2
+            return 1
+        fi
+    done
+}
+check_destinations
+config_tmp=$(mktemp "$config_target.tmp.XXXXXX")
+utility_tmp=
+trap 'rm -f -- "$config_tmp" "$utility_tmp"' 0
 trap 'exit 1' 1 2 3 15
-
-# A failed or partial fetch must never affect an existing configuration.
-if ! curl -fsSL -o "$tmp" "$url"; then
-    printf 'Herdr config download failed; existing config was not changed.\n' >&2
+utility_tmp=$(mktemp "$utility_target.tmp.XXXXXX")
+if [ -n "${HERDR_CONFIG_SOURCE:-}" ]; then
+    cp "$HERDR_CONFIG_SOURCE" "$config_tmp" && cp "$HERDR_UTILITY_SOURCE" "$utility_tmp" || {
+        printf 'Could not stage checkout files; destinations unchanged.\n' >&2
+        exit 1
+    }
+else
+    curl -fsSL -o "$config_tmp" "$base/config.toml" &&
+        curl -fsSL -o "$utility_tmp" "$base/bin/herdr-config" || {
+        printf 'Herdr download failed; destinations unchanged.\n' >&2
+        exit 1
+    }
+fi
+chmod 755 "$utility_tmp"
+check_destinations
+backup_file() {
+    path=$1
+    backup=
+    if [ -e "$path" ]; then
+        backup=$(mktemp "$path.bak.XXXXXX")
+        if ! cp -p "$path" "$backup"; then
+            rm -f -- "$backup"
+            printf 'Could not back up %s; destinations unchanged.\n' "$path" >&2
+            return 1
+        fi
+        printf 'Backed up existing file to %s\n' "$backup"
+    fi
+}
+backup_file "$config_target"
+backup_file "$utility_target"
+utility_backup=$backup
+check_destinations
+mv -f "$utility_tmp" "$utility_target"
+if ! mv -f "$config_tmp" "$config_target"; then
+    # The utility has changed but the old config is still in place. Restore
+    # the utility from its preserved backup, or remove a newly created one.
+    if [ -n "$utility_backup" ]; then
+        utility_tmp=$(mktemp "$utility_target.tmp.XXXXXX")
+        if ! cp -p "$utility_backup" "$utility_tmp" || ! mv -f "$utility_tmp" "$utility_target"; then
+            printf 'Config move failed; utility rollback failed. Restore from %s\n' "$utility_backup" >&2
+            exit 1
+        fi
+    else
+        if ! rm -f -- "$utility_target"; then
+            printf 'Config move failed; could not remove newly installed utility.\n' >&2
+            exit 1
+        fi
+    fi
+    printf 'Config move failed; utility restored and backups preserved.\n' >&2
     exit 1
 fi
-
-if [ -L "$config_dir" ] || [ -L "$target" ]; then
-    printf 'Refusing symlinked Herdr config directory or file: %s\n' "$target" >&2
-    exit 1
-fi
-if [ -e "$target" ]; then
-    if [ ! -f "$target" ]; then
-        printf 'Refusing to replace non-file config: %s\n' "$target" >&2
-        exit 1
-    fi
-    # mktemp reserves a unique backup name, so repeated installs never overwrite one.
-    backup=$(mktemp "$target.bak.XXXXXX")
-    if ! cp -p "$target" "$backup"; then
-        rm -f "$backup"
-        printf 'Could not back up config; existing config was not changed.\n' >&2
-        exit 1
-    fi
-    printf 'Backed up existing config to %s\n' "$backup"
-fi
-
-mv -f "$tmp" "$target"
-printf 'Installed Herdr config at %s\n' "$target"
+printf 'Installed Herdr config at %s and sync utility at %s\n' "$config_target" "$utility_target"

@@ -1,0 +1,69 @@
+#!/bin/sh
+# Fast-forward the trusted repository, then use its installer for safe deployment.
+set -eu
+if [ "$#" -ne 1 ] || [ "$1" != sync ]; then
+    printf 'Usage: herdr-config sync\n' >&2
+    exit 2
+fi
+origin=git@github.com:elvisgastelum/herdr-config.git
+repository=${HERDR_CONFIG_REPOSITORY:-$origin}
+# The override exists for offline fixtures; reject option-like or relative paths.
+if [ "$repository" != "$origin" ]; then
+    case $repository in
+        /*) [ -d "$repository" ] || { printf 'Invalid repository override.\n' >&2; exit 1; } ;;
+        *) printf 'Repository override must be an absolute local directory.\n' >&2; exit 1 ;;
+    esac
+fi
+home=${HOME:?HOME must be set}
+if [ -n "${XDG_DATA_HOME:-}" ]; then
+    data_home=$XDG_DATA_HOME
+else
+    data_home=$home/.local/share
+fi
+checkout=$data_home/herdr-config
+# Ignore ambient Git settings that could execute hooks or change status/pull behavior.
+# An existing checkout's local Git config and the remote remain trusted inputs.
+safe_git() (
+    unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_EXEC_PATH GIT_TEMPLATE_DIR GIT_SSH_COMMAND GIT_SSH
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+    export GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+    git -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+        -c init.templateDir= -c protocol.ext.allow=never "$@"
+)
+if [ -L "$home" ] || [ -L "$home/.local" ] || [ -L "$data_home" ] || [ -L "$checkout" ]; then
+    printf 'Refusing symlinked checkout path: %s\n' "$checkout" >&2
+    exit 1
+fi
+if [ ! -e "$checkout" ]; then
+    mkdir -p "$data_home"
+    safe_git clone --branch main --single-branch "$repository" "$checkout" || exit 1
+else
+    [ -d "$checkout" ] || { printf 'Checkout is not a directory.\n' >&2; exit 1; }
+fi
+# Validate before pulling or executing any installer from the checkout.
+actual=$(safe_git -C "$checkout" rev-parse --show-toplevel 2>/dev/null) || exit 1
+[ "$actual" = "$checkout" ] &&
+    [ "$(safe_git -C "$checkout" remote get-url origin)" = "$repository" ] &&
+    [ "$(safe_git -C "$checkout" symbolic-ref --quiet --short HEAD)" = main ] || {
+    printf 'Checkout origin, branch, or root does not match expectations.\n' >&2
+    exit 1
+}
+clean_checkout() {
+    changes=$(safe_git -C "$checkout" status --porcelain --untracked-files=all) || return 1
+    if [ -n "$changes" ]; then
+        printf 'Refusing dirty checkout; local edits preserved: %s\n' "$checkout" >&2
+        return 1
+    fi
+}
+clean_checkout || exit 1
+safe_git -C "$checkout" pull --ff-only origin main || {
+    printf 'Fast-forward pull failed; deployed config unchanged.\n' >&2
+    exit 1
+}
+clean_checkout || exit 1
+[ -f "$checkout/install.sh" ] && [ ! -L "$checkout/install.sh" ] || {
+    printf 'Checkout installer missing or symlinked.\n' >&2
+    exit 1
+}
+HERDR_CONFIG_SOURCE="$checkout/config.toml" HERDR_UTILITY_SOURCE="$checkout/bin/herdr-config" \
+    sh "$checkout/install.sh"
