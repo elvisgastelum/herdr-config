@@ -71,6 +71,10 @@ printf 'older\n' > "$backups/herdr-config.bak.AAAAAA"
 printf 'newer\n' > "$backups/herdr-config.bak.BBBBBB"
 touch -t 202001010000 "$backups/herdr-config.bak.AAAAAA"
 touch -t 202101010000 "$backups/herdr-config.bak.BBBBBB"
+printf 'old skill\n' > "$backups/herdr-config-skill.bak.AAAAAA"
+printf 'new skill\n' > "$backups/herdr-config-skill.bak.BBBBBB"
+touch -t 202001010000 "$backups/herdr-config-skill.bak.AAAAAA"
+touch -t 202101010000 "$backups/herdr-config-skill.bak.BBBBBB"
 printf 'legacy\n' > "$root/xdg/herdr/config.toml.bak.OLDOLD"
 printf 'unknown\n' > "$backups/notes"
 if run backup --clean; then fail 'unknown file accepted'; fi
@@ -82,6 +86,7 @@ if run backup --clean; then fail 'symlink accepted'; fi
 rm "$backups/config.toml.bak.CCCCCC"
 run backup --clean || fail 'clean failed'
 [ ! -e "$backups/herdr-config.bak.AAAAAA" ] && [ -f "$backups/herdr-config.bak.BBBBBB" ] || fail 'utility retention wrong'
+[ ! -e "$backups/herdr-config-skill.bak.AAAAAA" ] && [ -f "$backups/herdr-config-skill.bak.BBBBBB" ] || fail 'skill retention wrong'
 count=0
 for file in "$backups"/config.toml.bak.*; do [ ! -f "$file" ] || count=$((count + 1)); done
 [ "$count" -eq 1 ] || fail 'config retention wrong'

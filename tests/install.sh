@@ -22,6 +22,9 @@ case $4 in
             exit 22
         fi
         cp "$UTILITY_SOURCE" "$3" ;;
+    https://raw.githubusercontent.com/elvisgastelum/herdr-config/main/skills/herdr-config/SKILL.md)
+        [ "${SKILL_FAIL:-0}" = 0 ] || exit 22
+        cp "$SKILL_SOURCE" "$3" ;;
     *) exit 91 ;;
 esac
 CURL
@@ -38,7 +41,7 @@ export MV_REAL
 printf 'new configuration\n' > "$root/new"
 printf 'updated configuration\n' > "$root/updated"
 printf '#!/bin/sh\nexit 0\n' > "$root/utility"
-export UTILITY_SOURCE="$root/utility"
+export UTILITY_SOURCE="$root/utility" SKILL_SOURCE="$repo/skills/herdr-config/SKILL.md"
 
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 assert_same() { cmp -s "$1" "$2" || fail "different content: $1"; }
@@ -63,6 +66,7 @@ assert_same "$root/new" "$root/fresh/.config/herdr/config.toml"
 assert_backups "$root/fresh/.config/herdr/backups/config.toml" 0
 assert_same "$root/utility" "$root/fresh/.local/bin/herdr-config"
 [ -x "$root/fresh/.local/bin/herdr-config" ] || fail 'utility not executable'
+assert_same "$SKILL_SOURCE" "$root/fresh/.agents/skills/herdr-config/SKILL.md"
 printf 'ok: fresh install provisions utility\n'
 
 mkdir -p "$root/existing/.config/herdr"
@@ -154,3 +158,23 @@ for backup in "$root/existing/.config/herdr/backups/config.toml".bak.*; do
 done
 [ "$found_first" -eq 1 ] || fail 'first install not preserved on repeat'
 printf 'ok: repeated install preserves earlier backups\n'
+mkdir -p "$root/skill-existing/.agents/skills/herdr-config" "$root/skill-existing/.config/herdr"
+printf 'old skill\n' > "$root/skill-existing/.agents/skills/herdr-config/SKILL.md"
+install skill-existing '' "$root/new" || fail 'existing skill install failed'
+assert_same "$SKILL_SOURCE" "$root/skill-existing/.agents/skills/herdr-config/SKILL.md"
+[ "$(cat "$root/skill-existing/.config/herdr/backups/herdr-config-skill.bak."*)" = 'old skill' ] || fail 'skill backup missing'
+mkdir -p "$root/skill-linked/.agents/skills/herdr-config" "$root/skill-outside"
+printf 'outside\n' > "$root/skill-outside/SKILL.md"
+ln -s "$root/skill-outside/SKILL.md" "$root/skill-linked/.agents/skills/herdr-config/SKILL.md"
+if install skill-linked '' "$root/new"; then fail 'symlinked skill accepted'; fi
+[ "$(cat "$root/skill-outside/SKILL.md")" = outside ] || fail 'skill symlink followed'
+[ ! -e "$root/skill-linked/.config/herdr/config.toml" ] || fail 'config installed despite skill symlink'
+mkdir -p "$root/skill-failure/.config/herdr"
+printf 'original\n' > "$root/skill-failure/.config/herdr/config.toml"
+if ( SKILL_FAIL=1; export SKILL_FAIL; install skill-failure '' "$root/new" ); then fail 'skill fetch failure accepted'; fi
+[ "$(cat "$root/skill-failure/.config/herdr/config.toml")" = original ] || fail 'skill fetch failure changed config'
+mkdir -p "$root/skill-rollback/.agents/skills/herdr-config" "$root/skill-rollback/.config/herdr"
+printf 'old skill\n' > "$root/skill-rollback/.agents/skills/herdr-config/SKILL.md"
+if ( FAIL_CONFIG_MOVE=1 CONFIG_MOVE_TARGET="$root/skill-rollback/.config/herdr/config.toml"; export FAIL_CONFIG_MOVE CONFIG_MOVE_TARGET; install skill-rollback '' "$root/new" ); then fail 'config failure accepted'; fi
+[ "$(cat "$root/skill-rollback/.agents/skills/herdr-config/SKILL.md")" = 'old skill' ] || fail 'skill rollback failed'
+printf 'ok: skill provisioning, backup, symlink, fetch and rollback\n'

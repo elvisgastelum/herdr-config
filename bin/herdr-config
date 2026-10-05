@@ -38,6 +38,7 @@ recognized() {
     case $name in
         config.toml.bak.[a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9]) return 0 ;;
         herdr-config.bak.[a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9]) return 0 ;;
+        herdr-config-skill.bak.[a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9]) return 0 ;;
     esac
     return 1
 }
@@ -122,7 +123,7 @@ case ${1:-} in
                 safe_config_paths || exit 1
                 [ -d "$backups" ] || exit 0
                 check_backups || exit 1
-                clean_kind config.toml && clean_kind herdr-config
+                clean_kind config.toml && clean_kind herdr-config && clean_kind herdr-config-skill
                 exit $? ;;
             2:restore) restore; exit $? ;;
             *) printf 'Usage: herdr-config backup [--clean|restore]\n' >&2; exit 2 ;;
@@ -195,4 +196,5 @@ clean_checkout || exit 1
     exit 1
 }
 HERDR_CONFIG_SOURCE="$checkout/config.toml" HERDR_UTILITY_SOURCE="$checkout/bin/herdr-config" \
+    HERDR_SKILL_SOURCE="$checkout/skills/herdr-config/SKILL.md" \
     sh "$checkout/install.sh"

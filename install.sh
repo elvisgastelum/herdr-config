@@ -13,38 +13,44 @@ config_target=$config_dir/config.toml
 backup_dir=$config_dir/backups
 bin_dir=$home/.local/bin
 utility_target=$bin_dir/herdr-config
+skill_parent=$home/.agents/skills
+skill_dir=$skill_parent/herdr-config
+skill_target=$skill_dir/SKILL.md
 
-# Both overrides must name regular files in the same trusted checkout. Sync uses
+# All three overrides must name regular files in the same trusted checkout. Sync uses
 # these only after checking the checkout's origin and branch.
-if [ -n "${HERDR_CONFIG_SOURCE:-}" ] || [ -n "${HERDR_UTILITY_SOURCE:-}" ]; then
-    [ -n "${HERDR_CONFIG_SOURCE:-}" ] && [ -n "${HERDR_UTILITY_SOURCE:-}" ] &&
+if [ -n "${HERDR_CONFIG_SOURCE:-}" ] || [ -n "${HERDR_UTILITY_SOURCE:-}" ] || [ -n "${HERDR_SKILL_SOURCE:-}" ]; then
+    [ -n "${HERDR_CONFIG_SOURCE:-}" ] && [ -n "${HERDR_UTILITY_SOURCE:-}" ] && [ -n "${HERDR_SKILL_SOURCE:-}" ] &&
         [ -f "$HERDR_CONFIG_SOURCE" ] && [ ! -L "$HERDR_CONFIG_SOURCE" ] &&
-        [ -f "$HERDR_UTILITY_SOURCE" ] && [ ! -L "$HERDR_UTILITY_SOURCE" ] || {
-        printf 'Both source overrides must be regular, non-symlink files.\n' >&2
+        [ -f "$HERDR_UTILITY_SOURCE" ] && [ ! -L "$HERDR_UTILITY_SOURCE" ] &&
+        [ -f "$HERDR_SKILL_SOURCE" ] && [ ! -L "$HERDR_SKILL_SOURCE" ] || {
+        printf 'All three source overrides must be regular, non-symlink files.\n' >&2
         exit 1
     }
 fi
 # Check the caller-controlled parents as well as the immediate destinations.
 # More distant system ancestors are outside this installer's ownership.
-for dir in "$home" "$config_home" "$home/.local" "$config_dir" "$backup_dir" "$bin_dir"; do
+for dir in "$home" "$config_home" "$home/.local" "$config_dir" "$backup_dir" "$bin_dir" "$home/.agents" "$skill_parent" "$skill_dir"; do
     if [ -L "$dir" ]; then
         printf 'Refusing symlinked destination directory: %s\n' "$dir" >&2
         exit 1
     fi
 done
-mkdir -p "$config_dir" "$bin_dir"
+mkdir -p "$config_dir" "$bin_dir" "$skill_dir"
 check_destinations() {
-    for path in "$config_dir" "$backup_dir" "$bin_dir" "$config_target" "$utility_target"; do
+    for path in "$config_dir" "$backup_dir" "$bin_dir" "$home/.agents" "$skill_parent" "$skill_dir" "$config_target" "$utility_target" "$skill_target"; do
         if [ -L "$path" ]; then
             printf 'Refusing symlinked destination: %s\n' "$path" >&2
             return 1
         fi
     done
-    if [ -e "$backup_dir" ] && [ ! -d "$backup_dir" ]; then
-        printf 'Refusing non-directory backup path: %s\n' "$backup_dir" >&2
-        return 1
-    fi
-    for path in "$config_target" "$utility_target"; do
+    for dir in "$backup_dir" "$home/.agents" "$skill_parent" "$skill_dir"; do
+        if [ -e "$dir" ] && [ ! -d "$dir" ]; then
+            printf 'Refusing non-directory destination: %s\n' "$dir" >&2
+            return 1
+        fi
+    done
+    for path in "$config_target" "$utility_target" "$skill_target"; do
         if [ -e "$path" ] && [ ! -f "$path" ]; then
             printf 'Refusing non-file destination: %s\n' "$path" >&2
             return 1
@@ -54,17 +60,21 @@ check_destinations() {
 check_destinations
 config_tmp=$(mktemp "$config_target.tmp.XXXXXX")
 utility_tmp=
-trap 'rm -f -- "$config_tmp" "$utility_tmp"' 0
+skill_tmp=
+trap 'rm -f -- "$config_tmp" "$utility_tmp" "$skill_tmp"' 0
 trap 'exit 1' 1 2 3 15
 utility_tmp=$(mktemp "$utility_target.tmp.XXXXXX")
+skill_tmp=$(mktemp "$skill_target.tmp.XXXXXX")
 if [ -n "${HERDR_CONFIG_SOURCE:-}" ]; then
-    cp "$HERDR_CONFIG_SOURCE" "$config_tmp" && cp "$HERDR_UTILITY_SOURCE" "$utility_tmp" || {
+    cp "$HERDR_CONFIG_SOURCE" "$config_tmp" && cp "$HERDR_UTILITY_SOURCE" "$utility_tmp" &&
+        cp "$HERDR_SKILL_SOURCE" "$skill_tmp" || {
         printf 'Could not stage checkout files; destinations unchanged.\n' >&2
         exit 1
     }
 else
     curl -fsSL -o "$config_tmp" "$base/config.toml" &&
-        curl -fsSL -o "$utility_tmp" "$base/bin/herdr-config" || {
+        curl -fsSL -o "$utility_tmp" "$base/bin/herdr-config" &&
+        curl -fsSL -o "$skill_tmp" "$base/skills/herdr-config/SKILL.md" || {
         printf 'Herdr download failed; destinations unchanged.\n' >&2
         exit 1
     }
@@ -90,24 +100,35 @@ backup_file() {
 backup_file "$config_target" config.toml
 backup_file "$utility_target" herdr-config
 utility_backup=$backup
+backup_file "$skill_target" herdr-config-skill
+skill_backup=$backup
 check_destinations
-mv -f "$utility_tmp" "$utility_target"
-if ! mv -f "$config_tmp" "$config_target"; then
-    # The utility has changed but the old config is still in place. Restore
-    # the utility from its preserved backup, or remove a newly created one.
-    if [ -n "$utility_backup" ]; then
-        utility_tmp=$(mktemp "$utility_target.tmp.XXXXXX")
-        if ! cp -p "$utility_backup" "$utility_tmp" || ! mv -f "$utility_tmp" "$utility_target"; then
-            printf 'Config move failed; utility rollback failed. Restore from %s\n' "$utility_backup" >&2
-            exit 1
+rollback_file() {
+    target=$1
+    saved=$2
+    if [ -n "$saved" ]; then
+        rollback_tmp=$(mktemp "$target.tmp.XXXXXX") || return 1
+        if ! cp -p "$saved" "$rollback_tmp" || ! mv -f "$rollback_tmp" "$target"; then
+            printf 'Rollback failed; restore %s manually from %s\n' "$target" "$saved" >&2
+            return 1
         fi
     else
-        if ! rm -f -- "$utility_target"; then
-            printf 'Config move failed; could not remove newly installed utility.\n' >&2
-            exit 1
-        fi
+        rm -f -- "$target" || return 1
     fi
-    printf 'Config move failed; utility restored and backups preserved.\n' >&2
+}
+mv -f "$skill_tmp" "$skill_target"
+if ! mv -f "$utility_tmp" "$utility_target"; then
+    rollback_file "$skill_target" "$skill_backup" || exit 1
+    printf 'Utility move failed; skill restored.\n' >&2
     exit 1
 fi
-printf 'Installed Herdr config at %s and sync utility at %s\n' "$config_target" "$utility_target"
+if ! mv -f "$config_tmp" "$config_target"; then
+    # The old config is still in place; restore both previously deployed files.
+    restored=1
+    rollback_file "$utility_target" "$utility_backup" || restored=0
+    rollback_file "$skill_target" "$skill_backup" || restored=0
+    [ "$restored" -eq 1 ] || exit 1
+    printf 'Config move failed; utility and skill restored and backups preserved.\n' >&2
+    exit 1
+fi
+printf 'Installed Herdr config at %s, sync utility at %s, and skill at %s\n' "$config_target" "$utility_target" "$skill_target"
