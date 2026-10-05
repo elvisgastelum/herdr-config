@@ -17,6 +17,8 @@ git -C "$root/seed" checkout -qb main
 cp "$repo/install.sh" "$root/seed/install.sh"
 mkdir "$root/seed/bin"
 cp "$repo/bin/herdr-config" "$root/seed/bin/herdr-config"
+mkdir -p "$root/seed/skills/herdr-config"
+cp "$repo/skills/herdr-config/SKILL.md" "$root/seed/skills/herdr-config/SKILL.md"
 printf 'initial config\n' > "$root/seed/config.toml"
 git -C "$root/seed" add .
 git -C "$root/seed" commit -qm initial
@@ -34,6 +36,7 @@ run || fail 'initial clone failed'
 [ "$(git -C "$root/data/herdr-config" branch --show-current)" = main ] || fail 'wrong branch'
 [ "$(cat "$root/xdg/herdr/config.toml")" = 'initial config' ] || fail 'initial deploy'
 [ -x "$root/home/.local/bin/herdr-config" ] || fail 'utility not executable'
+cmp -s "$repo/skills/herdr-config/SKILL.md" "$root/home/.agents/skills/herdr-config/SKILL.md" || fail 'initial skill not installed'
 printf 'next config\n' > "$root/seed/config.toml"
 git -C "$root/seed" add config.toml
 git -C "$root/seed" commit -qm next
@@ -49,7 +52,8 @@ printf '[core]\n\thooksPath = %s\n\tfsmonitor = %s\n' "$root/hooks" "$root/hooks
     run ) || fail 'fast-forward with ambient Git config failed'
 [ ! -e "$root/hook-ran" ] || fail 'ambient Git config or checkout hook executed'
 [ "$(cat "$root/xdg/herdr/config.toml")" = 'next config' ] || fail 'updated deploy'
-[ "$(cat "$root/xdg/herdr/config.toml".bak.*)" = 'initial config' ] || fail 'missing backup'
+[ -f "$root/home/.agents/skills/herdr-config/SKILL.md" ] || fail 'sync removed skill'
+[ "$(cat "$root/xdg/herdr/backups/config.toml".bak.*)" = 'initial config' ] || fail 'missing backup'
 # Inject a pull failure while retaining a valid origin and checkout.
 mkdir "$root/bin"
 cat > "$root/bin/git" <<'GIT'

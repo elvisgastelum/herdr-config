@@ -1,10 +1,140 @@
 #!/bin/sh
-# Fast-forward the trusted repository, then use its installer for safe deployment.
+# Manage local backups and reloads; sync fast-forwards the trusted repository.
 set -eu
-if [ "$#" -ne 1 ] || [ "$1" != sync ]; then
-    printf 'Usage: herdr-config sync\n' >&2
-    exit 2
-fi
+home=${HOME:?HOME must be set}
+config_home=${XDG_CONFIG_HOME:-$home/.config}
+config_dir=$config_home/herdr
+config=$config_dir/config.toml
+backups=$config_dir/backups
+safe_config_paths() {
+    for path in "$home" "$config_home" "$config_dir" "$backups" "$config"; do
+        if [ -L "$path" ]; then
+            printf 'Refusing symlinked config path: %s\n' "$path" >&2
+            return 1
+        fi
+    done
+    if [ -e "$backups" ] && [ ! -d "$backups" ]; then
+        printf 'Backup path is not a directory.\n' >&2
+        return 1
+    fi
+    if [ ! -f "$config" ] || [ -L "$config" ]; then
+        printf 'Current config must be a regular file.\n' >&2
+        return 1
+    fi
+}
+snapshot() {
+    safe_config_paths || return 1
+    mkdir -p "$backups" || return 1
+    backup=$(mktemp "$backups/config.toml.bak.XXXXXX") || return 1
+    if ! cp -p "$config" "$backup" || ! touch -m "$backup"; then
+        rm -f -- "$backup"
+        return 1
+    fi
+    printf 'Backed up config to %s\n' "$backup"
+}
+recognized() {
+    [ -f "$1" ] && [ ! -L "$1" ] || return 1
+    name=${1##*/}
+    case $name in
+        config.toml.bak.[a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9]) return 0 ;;
+        herdr-config.bak.[a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9]) return 0 ;;
+        herdr-config-skill.bak.[a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9][a-zA-Z0-9]) return 0 ;;
+    esac
+    return 1
+}
+check_backups() {
+    for file in "$backups"/* "$backups"/.[!.]* "$backups"/..?*; do
+        [ -e "$file" ] || [ -L "$file" ] || continue
+        if ! recognized "$file"; then
+            printf 'Refusing unknown or unsafe backup: %s\n' "$file" >&2
+            return 1
+        fi
+    done
+}
+backup_time() {
+    stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1"
+}
+clean_kind() {
+    # Compare snapshot mtimes, not path-splitting ls output. A tie for newest
+    # cannot establish a single survivor, so leave this kind untouched.
+    newest=
+    newest_time=
+    tied=0
+    for candidate in "$backups"/"$1".bak.*; do
+        [ -f "$candidate" ] || continue
+        time=$(backup_time "$candidate") || return 1
+        if [ -z "$newest_time" ] || [ "$time" -gt "$newest_time" ]; then
+            newest=$candidate
+            newest_time=$time
+            tied=0
+        elif [ "$time" -eq "$newest_time" ]; then
+            tied=1
+        fi
+    done
+    [ "$tied" -eq 0 ] || return 0
+    for candidate in "$backups"/"$1".bak.*; do
+        [ -f "$candidate" ] || continue
+        [ "$candidate" = "$newest" ] || rm -- "$candidate" || return 1
+    done
+}
+restore() {
+    safe_config_paths || return 1
+    [ -d "$backups" ] || { printf 'No backups available.\n' >&2; return 1; }
+    check_backups || return 1
+    command -v fzf >/dev/null 2>&1 || { printf 'fzf is required for restore.\n' >&2; return 1; }
+    tab=$(printf '\t')
+    # Only config snapshots appear in the selection table.
+    rows=
+    for file in "$backups"/config.toml.bak.*; do
+        [ -e "$file" ] || continue
+        recognized "$file" || return 1
+        created=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$file" 2>/dev/null) ||
+            created=$(stat -c '%y' "$file") || return 1
+        size=$(stat -f '%z' "$file" 2>/dev/null) || size=$(stat -c '%s' "$file") || return 1
+        rows="${rows}${file##*/}${tab}${created}${tab}${size}
+"
+    done
+    [ -n "$rows" ] || { printf 'No config backups available.\n' >&2; return 1; }
+    choice=$(printf 'NAME\tCREATED\tSIZE\n%s' "$rows" | fzf --header-lines=1) || return 1
+    case $choice in *"$tab"*) selected=${choice%%"$tab"*} ;; *) return 1 ;; esac
+    file=$backups/$selected
+    recognized "$file" || return 1
+    case $selected in config.toml.bak.*) ;; *) return 1 ;; esac
+    # fzf output is untrusted: only a row actually offered in this table is valid.
+    case "
+$rows" in *"
+$selected$tab"*) ;; *) return 1 ;; esac
+    # Recheck immediately before copying, and stage beside the destination.
+    safe_config_paths || return 1
+    snapshot || return 1
+    temp=$(mktemp "$config.tmp.XXXXXX") || return 1
+    if ! recognized "$file" || ! cp -p "$file" "$temp"; then
+        rm -f -- "$temp"
+        return 1
+    fi
+    if [ -L "$config" ]; then rm -f -- "$temp"; return 1; fi
+    if ! mv -f "$temp" "$config"; then rm -f -- "$temp"; return 1; fi
+}
+case ${1:-} in
+    backup)
+        case $#:${2:-} in
+            1:*) snapshot; exit $? ;;
+            2:--clean)
+                safe_config_paths || exit 1
+                [ -d "$backups" ] || exit 0
+                check_backups || exit 1
+                clean_kind config.toml && clean_kind herdr-config && clean_kind herdr-config-skill
+                exit $? ;;
+            2:restore) restore; exit $? ;;
+            *) printf 'Usage: herdr-config backup [--clean|restore]\n' >&2; exit 2 ;;
+        esac ;;
+    reload)
+        [ "$#" -eq 1 ] || exit 2
+        herdr server reload-config
+        exit $? ;;
+    sync) [ "$#" -eq 1 ] || exit 2 ;;
+    *) printf 'Usage: herdr-config {sync|backup [--clean|restore]|reload}\n' >&2; exit 2 ;;
+esac
 origin=git@github.com:elvisgastelum/herdr-config.git
 repository=${HERDR_CONFIG_REPOSITORY:-$origin}
 # The override exists for offline fixtures; reject option-like or relative paths.
@@ -66,4 +196,5 @@ clean_checkout || exit 1
     exit 1
 }
 HERDR_CONFIG_SOURCE="$checkout/config.toml" HERDR_UTILITY_SOURCE="$checkout/bin/herdr-config" \
+    HERDR_SKILL_SOURCE="$checkout/skills/herdr-config/SKILL.md" \
     sh "$checkout/install.sh"
