@@ -1,5 +1,6 @@
 #!/bin/sh
-# Install the published Herdr config and sync utility without reading piped stdin.
+# Install the published Herdr config and sync utility without reading piped stdin,
+# then run sync to set up the managed checkout and its plugins.
 set -eu
 base=https://raw.githubusercontent.com/elvisgastelum/herdr-config/main
 if [ -n "${XDG_CONFIG_HOME:-}" ]; then
@@ -132,3 +133,15 @@ if ! mv -f "$config_tmp" "$config_target"; then
     exit 1
 fi
 printf 'Installed Herdr config at %s, sync utility at %s, and skill at %s\n' "$config_target" "$utility_target" "$skill_target"
+# Sync runs this installer from its checkout with HERDR_CONFIG_SYNCING set; skip
+# sync there so it does not recurse. A local source-override install also skips
+# it, because sync would redeploy the published files over the local ones.
+[ -z "${HERDR_CONFIG_SYNCING:-}" ] || exit 0
+if [ -n "${HERDR_CONFIG_SOURCE:-}" ]; then
+    printf 'Skipped sync for a local source install; plugins were not linked.\n'
+    exit 0
+fi
+if ! "$utility_target" sync < /dev/null; then
+    printf 'Config installed, but herdr-config sync failed, so plugins may not be set up. Fix the cause and rerun: %s sync\n' "$utility_target" >&2
+    exit 1
+fi
