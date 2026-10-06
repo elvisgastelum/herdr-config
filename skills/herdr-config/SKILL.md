@@ -17,6 +17,8 @@ Use this skill when asked to update, sync, refresh, back up, restore, or clean u
 - Run `herdr-config reload` only after sync succeeds; do not reload after an error.
 - Never automatically run destructive cleanup (`backup --clean`), restore, or push changes. Backup and restore operations are user-invoked.
 - Report command failures and stop rather than hiding them or forcing a checkout update.
+- `herdr-config sync` also links the port-forward plugin (`elvisgastelum.port-forward`) from its checkout. A sync that deployed config but failed to link the plugin is still a failure: report it and do not reload. If sync reports the plugin is registered elsewhere, relay that; do not unlink or relink it.
+- Never start, stop, add, or remove port forwards, or connect to any host, unless the user explicitly asks.
 
 ## Decision Gates
 

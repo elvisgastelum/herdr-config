@@ -6,3 +6,9 @@ prompt_new_tab_name = false
 [keys]
 detach = "prefix+d"
 switch_tab = "alt+1..9"
+
+[[keys.command]]
+key = "prefix+f"
+type = "plugin_action"
+command = "elvisgastelum.port-forward.open"
+description = "port forwards"
