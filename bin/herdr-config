@@ -136,10 +136,11 @@ case ${1:-} in
     sync) [ "$#" -eq 1 ] || exit 2 ;;
     *) printf 'Usage: herdr-config {sync|backup [--clean|restore]|reload}\n' >&2; exit 2 ;;
 esac
-origin=git@github.com:elvisgastelum/herdr-config.git
-repository=${HERDR_CONFIG_REPOSITORY:-$origin}
+ssh_origin=git@github.com:elvisgastelum/herdr-config.git
+https_origin=https://github.com/elvisgastelum/herdr-config.git
+repository=${HERDR_CONFIG_REPOSITORY:-}
 # The override exists for offline fixtures; reject option-like or relative paths.
-if [ "$repository" != "$origin" ]; then
+if [ -n "$repository" ]; then
     case $repository in
         /*) [ -d "$repository" ] || { printf 'Invalid repository override.\n' >&2; exit 1; } ;;
         *) printf 'Repository override must be an absolute local directory.\n' >&2; exit 1 ;;
@@ -156,8 +157,8 @@ checkout=$data_home/herdr-config
 # An existing checkout's local Git config and the remote remain trusted inputs.
 safe_git() (
     unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_EXEC_PATH GIT_TEMPLATE_DIR GIT_SSH_COMMAND GIT_SSH
-    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
-    export GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0
+    export GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TERMINAL_PROMPT
     git -c core.hooksPath=/dev/null -c core.fsmonitor=false \
         -c init.templateDir= -c protocol.ext.allow=never "$@"
 )
@@ -167,14 +168,28 @@ if [ -L "$home" ] || [ -L "$home/.local" ] || [ -L "$data_home" ] || [ -L "$chec
 fi
 if [ ! -e "$checkout" ]; then
     mkdir -p "$data_home"
-    safe_git clone --branch main --single-branch "$repository" "$checkout" || exit 1
+    if [ -n "$repository" ]; then
+        safe_git clone --branch main --single-branch "$repository" "$checkout" || exit 1
+    # Prefer SSH when it already works without prompting; otherwise use the public
+    # HTTPS URL, which needs no GitHub account or key.
+    elif ! safe_git -c core.sshCommand='ssh -o BatchMode=yes -o ConnectTimeout=10' \
+        clone --quiet --branch main --single-branch "$ssh_origin" "$checkout" 2>/dev/null; then
+        rm -rf -- "$checkout"
+        printf 'GitHub SSH unavailable; cloning over HTTPS.\n'
+        safe_git clone --branch main --single-branch "$https_origin" "$checkout" || exit 1
+    fi
 else
     [ -d "$checkout" ] || { printf 'Checkout is not a directory.\n' >&2; exit 1; }
 fi
 # Validate before pulling or executing any installer from the checkout.
 actual=$(safe_git -C "$checkout" rev-parse --show-toplevel 2>/dev/null) || exit 1
-[ "$actual" = "$checkout" ] &&
-    [ "$(safe_git -C "$checkout" remote get-url origin)" = "$repository" ] &&
+actual_origin=$(safe_git -C "$checkout" remote get-url origin) || actual_origin=
+if [ -n "$repository" ]; then
+    [ "$actual_origin" = "$repository" ] || actual_origin=
+else
+    case $actual_origin in "$ssh_origin"|"$https_origin") ;; *) actual_origin= ;; esac
+fi
+[ "$actual" = "$checkout" ] && [ -n "$actual_origin" ] &&
     [ "$(safe_git -C "$checkout" symbolic-ref --quiet --short HEAD)" = main ] || {
     printf 'Checkout origin, branch, or root does not match expectations.\n' >&2
     exit 1
