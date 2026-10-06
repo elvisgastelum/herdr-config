@@ -190,4 +190,53 @@ grep -q 'plugin uninstall\|plugin unlink' "$FAKE_HERDR_CALLS" && fail 'upstream 
 printf '{"result":{"plugins":[{"plugin_id":"herdr-automatic-rename","enabled":true,"plugin_root":"/local/automatic-rename","source":{"kind":"local"}}]}}\n' > "$FAKE_HERDR_PLUGINS"
 SYNC_DATA_HOME="$root/plugin-data" run > "$root/upstream.out" 2>&1 || fail 'linked upstream plugin failed sync'
 grep -q 'herdr plugin unlink herdr-automatic-rename' "$root/upstream.out" || fail 'linked upstream plugin not reported'
-printf 'ok: clone, fast-forward, backup, hook/config isolation, dirty checks, origin failure and plugin links\n'
+# Without SSH access, the published sync clones over HTTPS and later reruns pull
+# over HTTPS. A fake git refuses the SSH URL and maps the HTTPS URL to the fixture.
+cat > "$root/bin/git" <<'GIT'
+#!/bin/sh
+https=https://github.com/elvisgastelum/herdr-config.git
+cloning=0 pulling=0
+for arg do
+    case $arg in
+        git@github.com:*) printf 'Permission denied (publickey).\n' >&2; exit 128 ;;
+        clone) cloning=1 ;;
+        pull) pulling=1 ;;
+    esac
+done
+[ "$cloning" -eq 1 ] || [ "$pulling" -eq 1 ] || exec "$GIT_REAL" "$@"
+for arg do
+    shift
+    case $arg in
+        "$https") set -- "$@" "$FAKE_REMOTE" ;;
+        origin) if [ "$pulling" -eq 1 ]; then set -- "$@" "$FAKE_REMOTE"; else set -- "$@" "$arg"; fi ;;
+        *) set -- "$@" "$arg" ;;
+    esac
+done
+"$GIT_REAL" "$@" || exit $?
+if [ "$cloning" -eq 1 ]; then
+    for dest do :; done
+    "$GIT_REAL" -C "$dest" remote set-url origin "$https"
+fi
+GIT
+chmod +x "$root/bin/git"
+printf '{"result":{"plugins":[]}}\n' > "$FAKE_HERDR_PLUGINS"
+run_published() {
+    HOME="$root/home" XDG_CONFIG_HOME="$root/xdg" XDG_DATA_HOME="$root/https-data" \
+        GIT_REAL="$(command -v git)" FAKE_REMOTE="$root/remote.git" PATH="$root/bin:$root/herdr-bin:$base_path" \
+        sh "$repo/bin/herdr-config" sync
+}
+run_published > "$root/https.out" 2>&1 || fail 'HTTPS fallback clone failed'
+grep -q 'cloning over HTTPS' "$root/https.out" || fail 'HTTPS fallback not reported'
+[ "$(git -C "$root/https-data/herdr-config" remote get-url origin)" = https://github.com/elvisgastelum/herdr-config.git ] ||
+    fail 'HTTPS checkout origin'
+[ "$(cat "$root/xdg/herdr/config.toml")" = 'latest config' ] || fail 'HTTPS clone did not deploy'
+printf 'rerun config\n' > "$root/seed/config.toml"
+git -C "$root/seed" add config.toml
+git -C "$root/seed" commit -qm rerun
+git -C "$root/seed" push -q origin main
+run_published > "$root/https.out" 2>&1 || fail 'HTTPS checkout rerun failed'
+[ "$(cat "$root/xdg/herdr/config.toml")" = 'rerun config' ] || fail 'HTTPS rerun did not pull'
+# An existing SSH checkout's origin stays accepted.
+git -C "$root/https-data/herdr-config" remote set-url origin git@github.com:elvisgastelum/herdr-config.git
+run_published > "$root/https.out" 2>&1 || fail 'SSH checkout origin rejected'
+printf 'ok: clone, HTTPS fallback, fast-forward, backup, hook/config isolation, dirty checks, origin failure and plugin links\n'
