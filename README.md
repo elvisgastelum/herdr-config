@@ -45,7 +45,7 @@ Enabled forwards are restored by the plugin's startup hook each time the Herdr s
 
 ## Automatic rename plugin
 
-`plugins/automatic-rename` is a vendored fork of [qu8n/herdr-automatic-rename](https://github.com/qu8n/herdr-automatic-rename) at commit `1db6c41` (see `plugins/automatic-rename/UPSTREAM.md`). It names tabs after their directory, branch, SSH host, or running program, and prefixes workspaces and tabs with their jump-key number. The plugin id stays `herdr-automatic-rename`, so upstream's config path, state, and action ids (such as `herdr-automatic-rename.reset`) are unchanged. It needs `bash` and `jq`.
+`plugins/automatic-rename` is a vendored fork of [qu8n/herdr-automatic-rename](https://github.com/qu8n/herdr-automatic-rename) at commit `1db6c41` (see `plugins/automatic-rename/UPSTREAM.md`). It names tabs after their directory, branch, SSH host, or running program, and prefixes workspaces and tabs with their jump-key number. Its plugin id is `elvisgastelum.automatic-rename`, so its actions are `elvisgastelum.automatic-rename.reset`, `.doctor`, and `.clear`; the config and state paths keep upstream's `herdr-automatic-rename` directory names. It needs `bash` and `jq`.
 
 **Configuration (optional):** every setting has a default. To toggle features such as `NAME_TABS` or `AUTO_INDEX`, copy `config.example.sh` to `${XDG_CONFIG_HOME:-$HOME/.config}/herdr-automatic-rename/config.sh` (or point `HERDR_AUTOMATIC_RENAME_CONFIG` at another file) and uncomment what you want to change:
 
@@ -71,9 +71,9 @@ The hooks do nothing outside a Herdr pane. Upstream's README in `plugins/automat
 | Plugin id | Directory |
 | --- | --- |
 | `elvisgastelum.port-forward` | `plugins/port-forward` |
-| `herdr-automatic-rename` | `plugins/automatic-rename` |
+| `elvisgastelum.automatic-rename` | `plugins/automatic-rename` |
 
-Sync needs `herdr` and `jq` on `PATH` for this step. For each plugin it refuses a missing or symlinked plugin directory or manifest and a plugin directory that resolves outside the checkout. If a plugin is already linked from the same path, sync leaves it as is, and prints an enable hint if it is disabled. If its id is registered from another path or installed from GitHub (for example an earlier upstream install of `herdr-automatic-rename`), sync prints where it is registered and leaves it unchanged; to switch to this checkout, run `herdr plugin uninstall <id>` and rerun `herdr-config sync`. Sync processes every plugin and exits nonzero if any link failed, after config was already deployed; fix the reported cause and rerun sync. To use a plugin from a trusted local checkout instead, run `herdr plugin link "$PWD/plugins/<dir>" --enabled` from the repository root. Plugins execute code from that directory, so link only a checkout you trust.
+Sync needs `herdr` and `jq` on `PATH` for this step. For each plugin it refuses a missing or symlinked plugin directory or manifest and a plugin directory that resolves outside the checkout. If a plugin is already linked from the same path, sync leaves it as is, and prints an enable hint if it is disabled. If its id is registered from another path or installed from GitHub, sync prints where it is registered and leaves it unchanged; to switch to this checkout, run `herdr plugin uninstall <id>` and rerun `herdr-config sync`. If the upstream plugin `herdr-automatic-rename` is still registered, sync warns that it renames the same tabs and prints the command to remove it, but does not remove it. Sync processes every plugin and exits nonzero if any link failed, after config was already deployed; fix the reported cause and rerun sync. To use a plugin from a trusted local checkout instead, run `herdr plugin link "$PWD/plugins/<dir>" --enabled` from the repository root. Plugins execute code from that directory, so link only a checkout you trust.
 
 ## Update with the repository
 

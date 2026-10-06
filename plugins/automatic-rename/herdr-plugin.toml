@@ -1,4 +1,4 @@
-id = "herdr-automatic-rename"
+id = "elvisgastelum.automatic-rename"
 name = "Herdr Automatic Rename"
 version = "0.13.0"
 # min_herdr_version stays at 0.7.1 deliberately. A requirement above the running
@@ -148,7 +148,7 @@ on = "pane.created"
 command = ["bash", "automatic-rename.sh", "pane.created"]
 
 # Opt a manually-renamed tab back into automatic naming (NAME_TABS). Invoke with
-#   herdr plugin action invoke herdr-automatic-rename.reset
+#   herdr plugin action invoke elvisgastelum.automatic-rename.reset
 # or bind a key in config.toml (type = "plugin_action").
 [[actions]]
 id = "reset"
@@ -158,7 +158,7 @@ command = ["bash", "automatic-rename.sh", "reset"]
 
 # Print why the current tab has the name it has: versions, the tab's state
 # record, its label, and the decisions one real pass made about it. Invoke with
-#   herdr plugin action invoke herdr-automatic-rename.doctor
+#   herdr plugin action invoke elvisgastelum.automatic-rename.doctor
 [[actions]]
 id = "doctor"
 title = "Herdr Automatic Rename: explain this tab's name"

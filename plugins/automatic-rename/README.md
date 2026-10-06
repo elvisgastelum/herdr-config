@@ -106,7 +106,7 @@ To customize, create your config file at `~/.config/herdr-automatic-rename/confi
 To invoke an action, either run it from the CLI:
 
 ```sh
-herdr plugin action invoke herdr-automatic-rename.reset
+herdr plugin action invoke elvisgastelum.automatic-rename.reset
 ```
 
 Or bind it in `config.toml` as a `plugin_action`, like this:
@@ -115,7 +115,7 @@ Or bind it in `config.toml` as a `plugin_action`, like this:
 [[keys.command]]
 key = "prefix+a" # a for "automatic"
 type = "plugin_action"
-command = "herdr-automatic-rename.reset"
+command = "elvisgastelum.automatic-rename.reset"
 description = "hand this tab's name back to automatic naming"
 ```
 
