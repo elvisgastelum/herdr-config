@@ -252,5 +252,15 @@ link_plugin() {
 }
 status=0
 link_plugin elvisgastelum.port-forward port-forward || status=1
-link_plugin herdr-automatic-rename automatic-rename || status=1
+link_plugin elvisgastelum.automatic-rename automatic-rename || status=1
+# The upstream plugin renames the same tabs as the fork; report a leftover
+# registration without removing it.
+upstream=$(printf '%s\n' "$plugins" | jq -r \
+    'first(.result.plugins[]? | select(.plugin_id == "herdr-automatic-rename") | .source.kind // "unknown") // empty' 2>/dev/null) ||
+    upstream=
+if [ -n "$upstream" ]; then
+    remove=uninstall
+    [ "$upstream" = local ] && remove=unlink
+    printf 'Upstream plugin herdr-automatic-rename is also registered and renames the same tabs; remove it with: herdr plugin %s herdr-automatic-rename\n' "$remove"
+fi
 exit "$status"
