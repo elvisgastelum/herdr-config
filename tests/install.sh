@@ -40,7 +40,8 @@ MV_REAL=$(command -v mv)
 export MV_REAL
 printf 'new configuration\n' > "$root/new"
 printf 'updated configuration\n' > "$root/updated"
-printf '#!/bin/sh\nexit 0\n' > "$root/utility"
+# The fake utility records how install.sh invokes it and can simulate a failed sync.
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "${UTILITY_CALLS:-/dev/null}"\nexit "${UTILITY_STATUS:-0}"\n' > "$root/utility"
 export UTILITY_SOURCE="$root/utility" SKILL_SOURCE="$repo/skills/herdr-config/SKILL.md"
 
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
@@ -59,6 +60,7 @@ install() {
     HOME="$root/$1" XDG_CONFIG_HOME="${2:-}" FETCH_SOURCE="$3" FETCH_FAIL="${4:-0}" \
         PATH="$root/bin:$PATH" sh "$repo/install.sh"
 }
+unset HERDR_CONFIG_SYNCING
 
 mkdir -p "$root/fresh"
 install fresh '' "$root/new" || fail 'fresh install failed'
@@ -68,6 +70,25 @@ assert_same "$root/utility" "$root/fresh/.local/bin/herdr-config"
 [ -x "$root/fresh/.local/bin/herdr-config" ] || fail 'utility not executable'
 assert_same "$SKILL_SOURCE" "$root/fresh/.agents/skills/herdr-config/SKILL.md"
 printf 'ok: fresh install provisions utility\n'
+
+# Install finishes by running the installed utility's sync, unless sync itself
+# is running the installer.
+mkdir -p "$root/sync-run" "$root/sync-guarded" "$root/sync-failure"
+( UTILITY_CALLS="$root/sync-run.calls"; export UTILITY_CALLS; install sync-run '' "$root/new" ) || fail 'install with sync failed'
+[ "$(cat "$root/sync-run.calls")" = sync ] || fail 'install did not run sync'
+( UTILITY_CALLS="$root/sync-guarded.calls" HERDR_CONFIG_SYNCING=1; export UTILITY_CALLS HERDR_CONFIG_SYNCING
+    install sync-guarded '' "$root/new" ) || fail 'guarded install failed'
+[ ! -e "$root/sync-guarded.calls" ] || fail 'guarded install ran sync'
+( UTILITY_CALLS="$root/sync-guarded.calls" HERDR_CONFIG_SOURCE="$root/new" HERDR_UTILITY_SOURCE="$root/utility" \
+    HERDR_SKILL_SOURCE="$SKILL_SOURCE"; export UTILITY_CALLS HERDR_CONFIG_SOURCE HERDR_UTILITY_SOURCE HERDR_SKILL_SOURCE
+    install sync-guarded '' "$root/new" ) || fail 'local source install failed'
+[ ! -e "$root/sync-guarded.calls" ] || fail 'local source install ran sync'
+if ( UTILITY_STATUS=5; export UTILITY_STATUS; install sync-failure '' "$root/new" > "$root/sync-failure.out" 2>&1 ); then
+    fail 'failed sync accepted'
+fi
+assert_same "$root/new" "$root/sync-failure/.config/herdr/config.toml"
+grep -q 'sync failed' "$root/sync-failure.out" || fail 'sync failure not reported'
+printf 'ok: install runs sync, honors the sync guard, and reports sync failure\n'
 
 mkdir -p "$root/existing/.config/herdr"
 printf 'original configuration\n' > "$root/old"
