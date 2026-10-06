@@ -1,0 +1,25 @@
+id = "elvisgastelum.port-forward"
+name = "Port Forward"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Manage SSH port forwards (ssh -L / ssh -R) from a Herdr popup"
+platforms = ["linux", "macos"]
+
+# Restore saved, enabled forwards once the Herdr server is ready.
+[[startup]]
+command = ["sh", "port-forward", "restore"]
+
+# Bind with type = "plugin_action", command = "elvisgastelum.port-forward.open".
+[[actions]]
+id = "open"
+title = "Port forwards"
+contexts = ["global"]
+command = ["sh", "-c", "exec \"$HERDR_BIN_PATH\" plugin pane open --plugin \"$HERDR_PLUGIN_ID\" --entrypoint manager --placement popup --width 80% --height 80% --focus"]
+
+[[panes]]
+id = "manager"
+title = "Port forwards"
+placement = "popup"
+width = "80%"
+height = "80%"
+command = ["sh", "port-forward", "ui"]

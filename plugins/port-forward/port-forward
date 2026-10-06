@@ -1,0 +1,303 @@
+#!/bin/sh
+# Manage SSH port forwards for the Herdr port-forward plugin.
+# Specs: <config>/forwards.tsv with fields id, enabled, target, dir, bind, dest.
+set -eu
+
+tab=$(printf '\t')
+config_dir=${HERDR_PLUGIN_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/plugins/config/elvisgastelum.port-forward}
+state_dir=${HERDR_PLUGIN_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/herdr-port-forward}
+specs=$config_dir/forwards.tsv
+counter=$config_dir/next-id
+ssh_bin=${PF_SSH:-ssh}
+herdr_bin=${HERDR_BIN_PATH:-${PF_HERDR:-herdr}}
+start_wait=${PF_START_WAIT:-20}
+
+die() { printf 'port-forward: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+usage() {
+    cat <<'USAGE'
+usage: port-forward <command>
+  add <target> <L|R> <bind_port> <dest_host:dest_port>
+        L = remote→local (ssh -L), R = local→remote (ssh -R)
+  list | start <id> | stop <id> | remove <id> | restore | ui
+USAGE
+}
+
+is_port() {
+    case $1 in '' | *[!0-9]* | 0*) return 1 ;; esac
+    [ "${#1}" -le 5 ] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+# Safe ssh host or target: non-empty, no whitespace or control characters,
+# and no leading dash so it can never be parsed as an ssh option.
+is_name() {
+    case $1 in '' | -* | *[[:space:]]* | *[[:cntrl:]]*) return 1 ;; esac
+}
+
+is_dest() {
+    case $1 in *:*) ;; *) return 1 ;; esac
+    is_name "${1%:*}" && is_port "${1##*:}"
+}
+
+ensure_dirs() { mkdir -p "$config_dir" "$state_dir"; }
+
+# Validate every saved spec; a malformed line means corrupt state (exit 2).
+check_specs() {
+    [ -f "$specs" ] || return 0
+    awk -F '\t' 'NF != 6 || $1 !~ /^[1-9][0-9]*$/ || $2 !~ /^[01]$/ || $4 !~ /^[LR]$/ ||
+        $5 !~ /^[1-9][0-9]*$/ || $3 == "" || $3 ~ /^-/ || $6 !~ /:[1-9][0-9]*$/ { bad = 1 }
+        END { exit bad }' "$specs" || die "corrupt state in $specs" 2
+}
+
+# Print the spec line for an id, or fail.
+spec_of() {
+    case $1 in '' | *[!0-9]*) return 1 ;; esac
+    [ -f "$specs" ] || return 1
+    awk -F '\t' -v id="$1" '$1 == id { print; found = 1 } END { exit !found }' "$specs"
+}
+
+write_specs() {
+    tmp=$(mktemp "$config_dir/.forwards.XXXXXX")
+    cat > "$tmp"
+    mv -f "$tmp" "$specs"
+}
+
+set_enabled() {
+    awk -F '\t' -v OFS='\t' -v id="$1" -v on="$2" '$1 == id { $2 = on } { print }' "$specs" | write_specs
+}
+
+pid_of() { [ -f "$state_dir/$1.pid" ] && cat "$state_dir/$1.pid"; }
+
+# Running means the recorded pid is alive and still looks like ssh, so a
+# reused pid belonging to another program is never reported or killed.
+is_running() {
+    pid=$(pid_of "$1" 2>/dev/null) || return 1
+    case $pid in '' | *[!0-9]*) return 1 ;; esac
+    command=$(ps -p "$pid" -o command= 2>/dev/null) || return 1
+    case $command in *ssh*) return 0 ;; esac
+    return 1
+}
+
+dir_label() { if [ "$1" = L ]; then printf 'remote→local'; else printf 'local→remote'; fi; }
+
+status_of() {
+    if is_running "$1"; then printf running
+    elif [ -f "$state_dir/$1.failed" ]; then printf failed
+    else printf stopped
+    fi
+}
+
+# start_tunnel <id> <target> <dir> <bind> <dest>: background ssh and detect early failure.
+start_tunnel() {
+    id=$1 log=$state_dir/$1.log
+    rm -f "$state_dir/$id.failed"
+    : > "$log"
+    pidtmp=$(mktemp "$state_dir/.pid.XXXXXX")
+    # Job control gives ssh its own process group, so closing the popup
+    # (which signals the popup's group) does not take the tunnel down.
+    set -m 2>/dev/null || :
+    nohup "$ssh_bin" -N -o BatchMode=yes -o ExitOnForwardFailure=yes \
+        -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+        "-$3" "$4:$5" -- "$2" < /dev/null > /dev/null 2>> "$log" &
+    printf '%s\n' "$!" > "$pidtmp"
+    set +m 2>/dev/null || :
+    mv -f "$pidtmp" "$state_dir/$id.pid"
+    tick=0
+    while [ "$tick" -lt "$start_wait" ]; do
+        if ! kill -0 "$(pid_of "$id")" 2>/dev/null; then
+            rm -f "$state_dir/$id.pid"
+            : > "$state_dir/$id.failed"
+            reason=$(tail -n 1 "$log")
+            printf 'port-forward: forward %s to %s failed: %s\n' "$id" "$2" "${reason:-ssh exited}" >&2
+            return 1
+        fi
+        sleep 0.1
+        tick=$((tick + 1))
+    done
+}
+
+stop_tunnel() {
+    if is_running "$1"; then
+        pid=$(pid_of "$1")
+        kill "$pid" 2>/dev/null || :
+        tick=0
+        while kill -0 "$pid" 2>/dev/null && [ "$tick" -lt 30 ]; do sleep 0.1; tick=$((tick + 1)); done
+        kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || :
+    fi
+    rm -f "$state_dir/$1.pid" "$state_dir/$1.failed"
+}
+
+start_spec() {
+    # shellcheck disable=SC2034
+    IFS=$tab read -r sid enabled target dir bind dest <<EOF
+$1
+EOF
+    start_tunnel "$sid" "$target" "$dir" "$bind" "$dest"
+}
+
+cmd_add() {
+    [ "$#" -eq 4 ] || { usage >&2; exit 1; }
+    target=$1 dir=$2 bind=$3 dest=$4
+    is_name "$target" || die "invalid target: '$target'"
+    case $dir in L | R) ;; *) die "direction must be L (remote→local) or R (local→remote)" ;; esac
+    is_port "$bind" || die "invalid bind port: $bind (1-65535)"
+    is_dest "$dest" || die "invalid destination: $dest (host:port)"
+    ensure_dirs
+    check_specs
+    if [ -f "$specs" ] && awk -F '\t' -v t="$target" -v d="$dir" -v b="$bind" \
+        '$3 == t && $4 == d && $5 == b { found = 1 } END { exit !found }' "$specs"; then
+        die "duplicate forward: $target $dir $bind"
+    fi
+    id=$(cat "$counter" 2>/dev/null || echo 1)
+    max=$( [ -f "$specs" ] && awk -F '\t' '$1 > m { m = $1 } END { print m + 0 }' "$specs" || echo 0)
+    case $id in '' | *[!0-9]*) id=1 ;; esac
+    [ "$id" -gt "$max" ] || id=$((max + 1))
+    printf '%s\n' "$((id + 1))" > "$counter.tmp" && mv -f "$counter.tmp" "$counter"
+    line="$id${tab}1${tab}$target${tab}$dir${tab}$bind${tab}$dest"
+    { [ ! -f "$specs" ] || cat "$specs"; printf '%s\n' "$line"; } | write_specs
+    printf 'added forward %s: %s %s %s -> %s\n' "$id" "$target" "$(dir_label "$dir")" "$bind" "$dest"
+    start_spec "$line"
+}
+
+cmd_list() {
+    check_specs
+    printf '%-4s %-8s %-13s %-24s %-6s %s\n' ID STATUS DIRECTION TARGET BIND DEST
+    [ -f "$specs" ] || return 0
+    while IFS=$tab read -r id enabled target dir bind dest; do
+        printf '%-4s %-8s %-13s %-24s %-6s %s\n' "$id" "$(status_of "$id")" \
+            "$(dir_label "$dir")" "$target" "$bind" "$dest"
+    done < "$specs"
+}
+
+require_spec() {
+    check_specs
+    spec=$(spec_of "${1:-}") || die "no such forward: ${1:-}"
+}
+
+cmd_start() {
+    require_spec "${1:-}"
+    ensure_dirs
+    set_enabled "$1" 1
+    if is_running "$1"; then printf 'forward %s already running\n' "$1"; return 0; fi
+    start_spec "$spec"
+    printf 'started forward %s\n' "$1"
+}
+
+cmd_stop() {
+    require_spec "${1:-}"
+    ensure_dirs
+    set_enabled "$1" 0
+    stop_tunnel "$1"
+    printf 'stopped forward %s\n' "$1"
+}
+
+cmd_remove() {
+    require_spec "${1:-}"
+    ensure_dirs
+    stop_tunnel "$1"
+    awk -F '\t' -v id="$1" '$1 != id' "$specs" | write_specs
+    rm -f "$state_dir/$1.log"
+    printf 'removed forward %s\n' "$1"
+}
+
+# Never prompts; exits 0 unless the saved state is corrupt.
+cmd_restore() {
+    check_specs
+    [ -f "$specs" ] || return 0
+    ensure_dirs
+    failed=
+    while IFS= read -r line; do
+        IFS=$tab read -r id enabled _ <<EOF
+$line
+EOF
+        [ "$enabled" = 1 ] || continue
+        is_running "$id" && continue
+        start_spec "$line" < /dev/null || failed="$failed $id"
+    done < "$specs"
+    [ -n "$failed" ] || return 0
+    printf 'port-forward: restore failed for:%s\n' "$failed" >&2
+    if [ -n "${HERDR_BIN_PATH:-}" ]; then
+        "$herdr_bin" notification show 'Port forward restore failed' \
+            --body "Forwards:$failed (see plugin state logs)" > /dev/null 2>&1 || :
+    fi
+    return 0
+}
+
+# ---------- interactive popup ----------
+
+pause() { printf '\nPress Enter to continue...'; read -r _ || :; }
+
+pick_forward() {
+    rows=$(cmd_list | tail -n +2)
+    [ -n "$rows" ] || { printf 'No forwards saved.\n'; pause; return 1; }
+    choice=$(printf '%s\n' "$rows" | fzf --prompt "$1 > " --header 'Esc to cancel') || return 1
+    printf '%s\n' "${choice%% *}"
+}
+
+pick_target() {
+    machines=
+    if command -v jq > /dev/null 2>&1; then
+        machines=$("$herdr_bin" machine list --json 2>/dev/null |
+            jq -r '.[] | select(.target != null and .target != "") | "\(.target)\t\(.label // "")"' 2>/dev/null) || machines=
+    fi
+    choice=$({ [ -z "$machines" ] || printf '%s\n' "$machines"; printf '%s\n' 'manual target...'; } |
+        fzf --prompt 'Target > ' --delimiter "$tab" --header 'Saved Herdr machines') || return 1
+    if [ "$choice" = 'manual target...' ]; then
+        printf 'SSH target (user@host or ssh config alias): ' >&2
+        read -r choice || return 1
+    else
+        choice=${choice%%"$tab"*}
+    fi
+    printf '%s\n' "$choice"
+}
+
+ui_add() {
+    target=$(pick_target) || return 0
+    dir=$(printf '%s\n' 'L  remote→local  (local port reaches a remote service, ssh -L)' \
+        'R  local→remote  (remote port reaches a local service, ssh -R)' |
+        fzf --prompt 'Direction > ') || return 0
+    dir=${dir%% *}
+    printf 'Bind port (%s side): ' "$( [ "$dir" = L ] && echo local || echo remote)"
+    read -r bind || return 0
+    printf 'Destination host [localhost]: '
+    read -r dhost || return 0
+    printf 'Destination port [%s]: ' "$bind"
+    read -r dport || return 0
+    ( cmd_add "$target" "$dir" "$bind" "${dhost:-localhost}:${dport:-$bind}" ) || :
+    pause
+}
+
+cmd_ui() {
+    command -v fzf > /dev/null 2>&1 || { printf 'port-forward: fzf is required for the UI\n' >&2; pause; exit 1; }
+    while :; do
+        clear 2>/dev/null || :
+        listing=$state_dir/.ui-list
+        cmd_list > "$listing" 2>&1 || :
+        action=$(printf '%s\n' Add Start Stop Remove Quit |
+            fzf --prompt 'Port forwards > ' --no-sort --header 'Esc to quit' \
+                --preview "cat '$listing'" --preview-window 'up,70%,wrap') || return 0
+        case $action in
+            Add) ui_add ;;
+            Start) id=$(pick_forward Start) && { ( cmd_start "$id" ) || :; pause; } ;;
+            Stop) id=$(pick_forward Stop) && { ( cmd_stop "$id" ) || :; pause; } ;;
+            Remove)
+                id=$(pick_forward Remove) || continue
+                printf 'Remove forward %s? [y/N] ' "$id"
+                read -r answer || continue
+                case $answer in y | Y | yes) ( cmd_remove "$id" ) || :; pause ;; esac ;;
+            *) return 0 ;;
+        esac
+    done
+}
+
+case ${1:-} in
+    add) shift; cmd_add "$@" ;;
+    list) cmd_list ;;
+    start) cmd_start "${2:-}" ;;
+    stop) cmd_stop "${2:-}" ;;
+    remove) cmd_remove "${2:-}" ;;
+    restore) cmd_restore ;;
+    ui) ensure_dirs; cmd_ui ;;
+    -h | --help | help) usage ;;
+    *) usage >&2; exit 1 ;;
+esac

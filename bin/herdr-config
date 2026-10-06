@@ -1,5 +1,6 @@
 #!/bin/sh
-# Manage local backups and reloads; sync fast-forwards the trusted repository.
+# Manage local backups and reloads; sync fast-forwards the trusted repository
+# and links its port-forward plugin.
 set -eu
 home=${HOME:?HOME must be set}
 config_home=${XDG_CONFIG_HOME:-$home/.config}
@@ -197,4 +198,49 @@ clean_checkout || exit 1
 }
 HERDR_CONFIG_SOURCE="$checkout/config.toml" HERDR_UTILITY_SOURCE="$checkout/bin/herdr-config" \
     HERDR_SKILL_SOURCE="$checkout/skills/herdr-config/SKILL.md" \
-    sh "$checkout/install.sh"
+    sh "$checkout/install.sh" || exit $?
+# Register the port-forward plugin from the validated checkout. Config is
+# already deployed, so failures here exit nonzero without rolling it back.
+plugin_id=elvisgastelum.port-forward
+plugin_dir=$checkout/plugins/port-forward
+link_failed() {
+    printf 'Config deployed, but the port-forward plugin is not registered: %s\n' "$1" >&2
+    printf 'Fix the cause and rerun herdr-config sync, or run: herdr plugin link %s --enabled\n' "$plugin_dir" >&2
+    exit 1
+}
+if [ -L "$checkout/plugins" ] || [ ! -d "$checkout/plugins" ] ||
+    [ -L "$plugin_dir" ] || [ ! -d "$plugin_dir" ] ||
+    [ -L "$plugin_dir/herdr-plugin.toml" ] || [ ! -f "$plugin_dir/herdr-plugin.toml" ]; then
+    link_failed 'checkout plugin directory or manifest missing or symlinked'
+fi
+logical_plugin_dir=$plugin_dir
+checkout_physical=$(cd -P -- "$checkout" && pwd -P) || link_failed 'cannot resolve checkout'
+plugin_dir=$(cd -P -- "$plugin_dir" && pwd -P) || link_failed 'cannot resolve plugin directory'
+case $plugin_dir in
+    "$checkout_physical"/*) ;;
+    *) link_failed 'plugin directory resolves outside the checkout' ;;
+esac
+command -v herdr >/dev/null 2>&1 || link_failed 'herdr is not on PATH'
+command -v jq >/dev/null 2>&1 || link_failed 'jq is required to read the plugin list'
+plugins=$(herdr plugin list --json) || link_failed 'herdr plugin list --json failed'
+registered=$(printf '%s\n' "$plugins" | jq -r --arg id "$plugin_id" \
+    'first(.result.plugins[]? | select(.plugin_id == $id) |
+        "\(.enabled)\t\(.source.kind // "unknown")\t\(.plugin_root // "")") // empty') ||
+    link_failed 'cannot parse herdr plugin list output'
+if [ -z "$registered" ]; then
+    herdr plugin link "$plugin_dir" --enabled || link_failed 'herdr plugin link failed'
+    printf 'Linked port-forward plugin from %s\n' "$plugin_dir"
+    exit 0
+fi
+tab=$(printf '\t')
+enabled=${registered%%"$tab"*}
+registered_root=${registered##*"$tab"}
+registered_kind=${registered#*"$tab"}
+registered_kind=${registered_kind%%"$tab"*}
+if [ "$registered_root" != "$plugin_dir" ] && [ "$registered_root" != "$logical_plugin_dir" ]; then
+    # Never replace a registration this checkout does not own.
+    printf 'Port-forward plugin already registered from %s (%s); leaving it unchanged.\n' \
+        "${registered_root:-unknown path}" "$registered_kind"
+elif [ "$enabled" != true ]; then
+    printf 'Port-forward plugin is linked but disabled; enable it with: herdr plugin enable %s\n' "$plugin_id"
+fi
