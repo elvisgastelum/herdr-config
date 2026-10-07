@@ -22,6 +22,7 @@ After installing the files, the published install runs `herdr-config sync`, whic
 | --- | --- |
 | `prefix+d` | Detach from Herdr. |
 | `prefix+f` | Open the port-forward popup (see [Port forwarding plugin](#port-forwarding-plugin)). |
+| `prefix+t` | Open the port-kill popup (see [Port kill plugin](#port-kill-plugin)). Herdr's default `prefix+k` focuses the pane above, so this uses `t` (terminate). |
 | `Alt+1` through `Alt+9` | Select the corresponding **tab**, not a numbered pane. |
 
 Your terminal or desktop may intercept Alt-number keys before Herdr sees them. Configure the terminal to send Alt/Meta to applications if the shortcut does not work.
@@ -42,6 +43,18 @@ Enabled forwards are restored by the plugin's startup hook each time the Herdr s
 **Registration:** `herdr-config sync` links this plugin with the other repo plugins; see [Plugin registration](#plugin-registration).
 
 **Limitations:** there is no supervision or automatic reconnect; after a dropped connection, use **Start** again. Start watches a new tunnel for about two seconds, so a forward reported as started can still fail afterwards (for example during authentication); its status in the popup reflects the process actually running.
+
+## Port kill plugin
+
+`plugins/port-kill` is a Herdr workflow plugin (`elvisgastelum.port-kill`) that kills processes listening on network ports from a popup opened with `prefix+t`. The popup lists every listening TCP socket and bound UDP socket with its port, protocol, PID, user, and full command line, sorted by port, with IPv4/IPv6 duplicates shown once. Typing filters by port; `Tab` selects several rows, `Enter` asks for confirmation, `ctrl-r` refreshes the list, and `Esc` closes the popup.
+
+At the prompt, `y` sends `TERM` to each selected process, waits up to three seconds, and reports which exited and which are still alive; `f` does the same and then sends `KILL` to survivors. Anything else cancels. Only the selected PIDs are signalled, and PID 1, PID 0, and the plugin's own process are refused. The same commands work outside the popup: `sh port-kill list [port]` and `sh port-kill kill [--force] <pid>...`.
+
+**Requirements:** `lsof` and `fzf` on the Herdr server host.
+
+**Where it runs:** like every plugin command, on the Herdr server host, so it lists and kills that host's processes. Without root, `lsof` may not show sockets owned by other users, and signalling them fails with a reported error.
+
+**Registration:** `herdr-config sync` links this plugin with the other repo plugins; see [Plugin registration](#plugin-registration).
 
 ## Automatic rename plugin
 
@@ -72,6 +85,7 @@ The hooks do nothing outside a Herdr pane. Upstream's README in `plugins/automat
 | --- | --- |
 | `elvisgastelum.port-forward` | `plugins/port-forward` |
 | `elvisgastelum.automatic-rename` | `plugins/automatic-rename` |
+| `elvisgastelum.port-kill` | `plugins/port-kill` |
 
 Sync needs `herdr` and `jq` on `PATH` for this step. For each plugin it refuses a missing or symlinked plugin directory or manifest and a plugin directory that resolves outside the checkout. If a plugin is already linked from the same path, sync leaves it as is, and prints an enable hint if it is disabled. If its id is registered from another path or installed from GitHub, sync prints where it is registered and leaves it unchanged; to switch to this checkout, run `herdr plugin uninstall <id>` and rerun `herdr-config sync`. If the upstream plugin `herdr-automatic-rename` is still registered, sync warns that it renames the same tabs and prints the command to remove it, but does not remove it. Sync processes every plugin and exits nonzero if any link failed, after config was already deployed; fix the reported cause and rerun sync. To use a plugin from a trusted local checkout instead, run `herdr plugin link "$PWD/plugins/<dir>" --enabled` from the repository root. Plugins execute code from that directory, so link only a checkout you trust.
 
@@ -89,4 +103,4 @@ For isolated offline tests only, `HERDR_CONFIG_REPOSITORY` accepts an existing a
 
 The installer places `config.toml` at `${XDG_CONFIG_HOME}/herdr/config.toml` when set and nonempty, otherwise `${HOME}/.config/herdr/config.toml`; the executable is placed at `${HOME}/.local/bin/herdr-config`, and the agent skill at `${HOME}/.agents/skills/herdr-config/SKILL.md`. Runtime state such as `session.json` is not synchronized. Existing regular files get unique `.bak.XXXXXX` backups under `${XDG_CONFIG_HOME:-$HOME/.config}/herdr/backups/` before replacement. Symlinked destination directories, their immediate caller-controlled parents (`HOME`, `XDG_CONFIG_HOME` when used, and `HOME/.local`), or destination files are refused; more distant ancestors and concurrent path replacement are not protected. Sync also checks its checkout, data-home directory, `HOME`, and `HOME/.local` for symlinks, not all ancestors. Failed downloads leave existing files unchanged. If utility or config deployment fails after replacing the skill, the installer rolls back replaced files using their preserved backups (or removes newly created files); if rollback fails, restore manually from the printed backup path. No input prompts are used.
 
-The published install needs `sh`, `curl`, `mktemp`, `mkdir`, `cp`, `chmod`, and `mv`, plus network access to GitHub. The installer refuses symlinked skill destinations and caller-controlled skill directories, and saves replaced skills as `herdr-config-skill.bak.*` under the backups directory. Sync additionally needs `git`; GitHub SSH access is optional. Test without network, live config writes, or real SSH hosts using `sh tests/install.sh`, `sh tests/sync.sh`, `sh tests/backup.sh`, and `sh tests/port-forward.sh`; the install test uses a fake `herdr-config sync`, and the sync and port-forward tests use fake `herdr` and `ssh` executables.
+The published install needs `sh`, `curl`, `mktemp`, `mkdir`, `cp`, `chmod`, and `mv`, plus network access to GitHub. The installer refuses symlinked skill destinations and caller-controlled skill directories, and saves replaced skills as `herdr-config-skill.bak.*` under the backups directory. Sync additionally needs `git`; GitHub SSH access is optional. Test without network, live config writes, or real SSH hosts using `sh tests/install.sh`, `sh tests/sync.sh`, `sh tests/backup.sh`, `sh tests/port-forward.sh`, and `sh tests/port-kill.sh`; the install test uses a fake `herdr-config sync`, the sync and port-forward tests use fake `herdr` and `ssh` executables, and the port-kill test uses a fake `lsof` that reports only processes it spawns.

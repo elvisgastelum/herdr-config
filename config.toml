@@ -12,3 +12,9 @@ key = "prefix+f"
 type = "plugin_action"
 command = "elvisgastelum.port-forward.open"
 description = "port forwards"
+
+[[keys.command]]
+key = "prefix+t"
+type = "plugin_action"
+command = "elvisgastelum.port-kill.open"
+description = "kill process by port"

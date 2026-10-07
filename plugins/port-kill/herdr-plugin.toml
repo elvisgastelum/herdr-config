@@ -1,0 +1,21 @@
+id = "elvisgastelum.port-kill"
+name = "Port Kill"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "List processes listening on network ports and kill them from a Herdr popup"
+platforms = ["linux", "macos"]
+
+# Bind with type = "plugin_action", command = "elvisgastelum.port-kill.open".
+[[actions]]
+id = "open"
+title = "Kill process by port"
+contexts = ["global"]
+command = ["sh", "-c", "exec \"$HERDR_BIN_PATH\" plugin pane open --plugin \"$HERDR_PLUGIN_ID\" --entrypoint manager --placement popup --width 80% --height 80% --focus"]
+
+[[panes]]
+id = "manager"
+title = "Kill process by port"
+placement = "popup"
+width = "80%"
+height = "80%"
+command = ["sh", "port-kill", "ui"]

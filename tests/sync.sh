@@ -22,6 +22,7 @@ cp "$repo/skills/herdr-config/SKILL.md" "$root/seed/skills/herdr-config/SKILL.md
 mkdir -p "$root/seed/plugins"
 cp -R "$repo/plugins/port-forward" "$root/seed/plugins/port-forward"
 cp -R "$repo/plugins/automatic-rename" "$root/seed/plugins/automatic-rename"
+cp -R "$repo/plugins/port-kill" "$root/seed/plugins/port-kill"
 printf 'initial config\n' > "$root/seed/config.toml"
 git -C "$root/seed" add .
 git -C "$root/seed" commit -qm initial
@@ -63,7 +64,7 @@ run || fail 'initial clone failed'
 [ "$(cat "$root/xdg/herdr/config.toml")" = 'initial config' ] || fail 'initial deploy'
 [ -x "$root/home/.local/bin/herdr-config" ] || fail 'utility not executable'
 cmp -s "$repo/skills/herdr-config/SKILL.md" "$root/home/.agents/skills/herdr-config/SKILL.md" || fail 'initial skill not installed'
-for plugin in port-forward automatic-rename; do
+for plugin in port-forward automatic-rename port-kill; do
     plugin_dir=$(cd -P -- "$root/data/herdr-config/plugins/$plugin" && pwd -P)
     grep -qxF "plugin link $plugin_dir --enabled" "$FAKE_HERDR_CALLS" || fail "initial sync did not link $plugin from checkout"
 done
@@ -84,7 +85,7 @@ printf '[core]\n\thooksPath = %s\n\tfsmonitor = %s\n' "$root/hooks" "$root/hooks
 [ "$(cat "$root/xdg/herdr/config.toml")" = 'next config' ] || fail 'updated deploy'
 [ -f "$root/home/.agents/skills/herdr-config/SKILL.md" ] || fail 'sync removed skill'
 [ "$(cat "$root/xdg/herdr/backups/config.toml".bak.*)" = 'initial config' ] || fail 'missing backup'
-[ "$(link_calls)" -eq 2 ] || fail 'already linked plugins were linked again'
+[ "$(link_calls)" -eq 3 ] || fail 'already linked plugins were linked again'
 # Inject a pull failure while retaining a valid origin and checkout.
 mkdir "$root/bin"
 cat > "$root/bin/git" <<'GIT'
@@ -147,19 +148,20 @@ fi
 [ "$(cat "$root/xdg/herdr/config.toml")" = 'pending config' ] || fail 'post-pull dirty checkout deployed'
 # A plugin registered from elsewhere (another checkout or GitHub) is left alone
 # with a migration hint, while one already linked from this checkout is a no-op.
-printf '{"result":{"plugins":[{"plugin_id":"elvisgastelum.port-forward","enabled":true,"plugin_root":"%s","source":{"kind":"local"}},{"plugin_id":"elvisgastelum.automatic-rename","enabled":true,"plugin_root":"/github/herdr-automatic-rename-abc","source":{"kind":"github"}}]}}\n' \
-    "$root/plugin-data/herdr-config/plugins/port-forward" > "$FAKE_HERDR_PLUGINS"
+printf '{"result":{"plugins":[{"plugin_id":"elvisgastelum.port-forward","enabled":true,"plugin_root":"%s","source":{"kind":"local"}},{"plugin_id":"elvisgastelum.automatic-rename","enabled":true,"plugin_root":"/github/herdr-automatic-rename-abc","source":{"kind":"github"}},{"plugin_id":"elvisgastelum.port-kill","enabled":true,"plugin_root":"%s","source":{"kind":"local"}}]}}\n' \
+    "$root/plugin-data/herdr-config/plugins/port-forward" "$root/plugin-data/herdr-config/plugins/port-kill" > "$FAKE_HERDR_PLUGINS"
 : > "$FAKE_HERDR_CALLS"
 SYNC_DATA_HOME="$root/plugin-data" run > "$root/elsewhere.out" 2>&1 || fail 'plugin registered elsewhere failed sync'
 [ "$(link_calls)" -eq 0 ] || fail 'plugin registered elsewhere was overwritten'
 grep -q '/github/herdr-automatic-rename-abc' "$root/elsewhere.out" || fail 'plugin registered elsewhere not reported'
 grep -q 'herdr plugin uninstall elvisgastelum.automatic-rename' "$root/elsewhere.out" || fail 'no migration hint'
-# One plugin registered elsewhere does not stop the other from being linked.
+# One plugin registered elsewhere does not stop the others from being linked.
 printf '{"result":{"plugins":[{"plugin_id":"elvisgastelum.port-forward","enabled":true,"plugin_root":"/elsewhere/port-forward","source":{"kind":"github"}}]}}\n' > "$FAKE_HERDR_PLUGINS"
 : > "$FAKE_HERDR_CALLS"
 SYNC_DATA_HOME="$root/plugin-data" run > "$root/elsewhere.out" 2>&1 || fail 'partially registered plugins failed sync'
-[ "$(link_calls)" -eq 1 ] || fail 'expected only automatic-rename to be linked'
+[ "$(link_calls)" -eq 2 ] || fail 'expected only automatic-rename and port-kill to be linked'
 grep -q '^plugin link .*/plugins/automatic-rename --enabled$' "$FAKE_HERDR_CALLS" || fail 'automatic-rename not linked'
+grep -q '^plugin link .*/plugins/port-kill --enabled$' "$FAKE_HERDR_CALLS" || fail 'port-kill not linked'
 grep -q '/elsewhere/port-forward' "$root/elsewhere.out" || fail 'port-forward registered elsewhere not reported'
 # A disabled link from this checkout only gets an enable hint.
 jq '.result.plugins[1].enabled = false' "$FAKE_HERDR_PLUGINS" > "$root/disabled.json"
@@ -175,16 +177,17 @@ printf '{"result":{"plugins":[]}}\n' > "$FAKE_HERDR_PLUGINS"
 if ( SYNC_DATA_HOME="$root/plugin-data" FAKE_HERDR_LINK_FAIL=port-forward run > "$root/link-fail.out" 2>&1 ); then
     fail 'failed plugin link accepted'
 fi
-[ "$(link_calls)" -eq 2 ] || fail 'failed link stopped the remaining plugins'
+[ "$(link_calls)" -eq 3 ] || fail 'failed link stopped the remaining plugins'
 grep -q 'plugin link .*/port-forward' "$root/link-fail.out" || fail 'failed link not explained'
 grep -q '"elvisgastelum.automatic-rename"' "$FAKE_HERDR_PLUGINS" || fail 'automatic-rename not linked after another failure'
+grep -q '"elvisgastelum.port-kill"' "$FAKE_HERDR_PLUGINS" || fail 'port-kill not linked after another failure'
 [ "$(cat "$root/xdg/herdr/config.toml")" = 'latest config' ] || fail 'config not deployed before link failure'
 # The upstream automatic-rename plugin renames the same tabs, so a leftover
 # registration is reported with its removal command but left in place.
 printf '{"result":{"plugins":[{"plugin_id":"herdr-automatic-rename","enabled":true,"plugin_root":"/github/herdr-automatic-rename-abc","source":{"kind":"github"}}]}}\n' > "$FAKE_HERDR_PLUGINS"
 : > "$FAKE_HERDR_CALLS"
 SYNC_DATA_HOME="$root/plugin-data" run > "$root/upstream.out" 2>&1 || fail 'upstream plugin failed sync'
-[ "$(link_calls)" -eq 2 ] || fail 'upstream plugin stopped repo plugins from linking'
+[ "$(link_calls)" -eq 3 ] || fail 'upstream plugin stopped repo plugins from linking'
 grep -q 'herdr plugin uninstall herdr-automatic-rename' "$root/upstream.out" || fail 'upstream plugin not reported'
 grep -q 'plugin uninstall\|plugin unlink' "$FAKE_HERDR_CALLS" && fail 'upstream plugin was removed'
 printf '{"result":{"plugins":[{"plugin_id":"herdr-automatic-rename","enabled":true,"plugin_root":"/local/automatic-rename","source":{"kind":"local"}}]}}\n' > "$FAKE_HERDR_PLUGINS"
