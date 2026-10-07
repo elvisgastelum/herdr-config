@@ -1,10 +1,12 @@
 # Herdr config
 
-Install the published config, `herdr-config` utility, agent skill, and repo plugins with one command. It downloads the installer first so a failed fetch cannot be mistaken for a successful piped `sh` invocation:
+Install the published config, `herdr-config` utility, agent skill, and repo plugins with one command:
 
 ```sh
-(tmp=$(mktemp) && curl -fsSL -o "$tmp" https://raw.githubusercontent.com/elvisgastelum/herdr-config/main/install.sh && sh "$tmp"; status=$?; [ -z "${tmp:-}" ] || rm -f "$tmp"; exit "$status")
+curl -fsSL https://raw.githubusercontent.com/elvisgastelum/herdr-config/main/install.sh | bash
 ```
+
+The installer is one brace group, so bash parses all of it before running anything: a failed or truncated download installs nothing.
 
 **Publication caveat:** The remote `main` branch must contain `install.sh`, `config.toml`, `bin/herdr-config`, and `skills/herdr-config/SKILL.md` for this to work. Until this change is published, `sh install.sh` without source overrides fetches the **published** files, not the current checkout. For a local-only installation from this trusted checkout, run:
 
@@ -103,4 +105,4 @@ For isolated offline tests only, `HERDR_CONFIG_REPOSITORY` accepts an existing a
 
 The installer places `config.toml` at `${XDG_CONFIG_HOME}/herdr/config.toml` when set and nonempty, otherwise `${HOME}/.config/herdr/config.toml`; the executable is placed at `${HOME}/.local/bin/herdr-config`, and the agent skill at `${HOME}/.agents/skills/herdr-config/SKILL.md`. Runtime state such as `session.json` is not synchronized. Existing regular files get unique `.bak.XXXXXX` backups under `${XDG_CONFIG_HOME:-$HOME/.config}/herdr/backups/` before replacement. Symlinked destination directories, their immediate caller-controlled parents (`HOME`, `XDG_CONFIG_HOME` when used, and `HOME/.local`), or destination files are refused; more distant ancestors and concurrent path replacement are not protected. Sync also checks its checkout, data-home directory, `HOME`, and `HOME/.local` for symlinks, not all ancestors. Failed downloads leave existing files unchanged. If utility or config deployment fails after replacing the skill, the installer rolls back replaced files using their preserved backups (or removes newly created files); if rollback fails, restore manually from the printed backup path. No input prompts are used.
 
-The published install needs `sh`, `curl`, `mktemp`, `mkdir`, `cp`, `chmod`, and `mv`, plus network access to GitHub. The installer refuses symlinked skill destinations and caller-controlled skill directories, and saves replaced skills as `herdr-config-skill.bak.*` under the backups directory. Sync additionally needs `git`; GitHub SSH access is optional. Test without network, live config writes, or real SSH hosts using `sh tests/install.sh`, `sh tests/sync.sh`, `sh tests/backup.sh`, `sh tests/port-forward.sh`, and `sh tests/port-kill.sh`; the install test uses a fake `herdr-config sync`, the sync and port-forward tests use fake `herdr` and `ssh` executables, and the port-kill test uses a fake `lsof` that reports only processes it spawns.
+The published install needs `bash` (or `sh`), `curl`, `mktemp`, `mkdir`, `cp`, `chmod`, and `mv`, plus network access to GitHub. The installer refuses symlinked skill destinations and caller-controlled skill directories, and saves replaced skills as `herdr-config-skill.bak.*` under the backups directory. Sync additionally needs `git`; GitHub SSH access is optional. Test without network, live config writes, or real SSH hosts using `sh tests/install.sh`, `sh tests/sync.sh`, `sh tests/backup.sh`, `sh tests/port-forward.sh`, and `sh tests/port-kill.sh`; the install test uses a fake `herdr-config sync`, the sync and port-forward tests use fake `herdr` and `ssh` executables, and the port-kill test uses a fake `lsof` that reports only processes it spawns.
