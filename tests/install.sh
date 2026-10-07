@@ -199,3 +199,15 @@ printf 'old skill\n' > "$root/skill-rollback/.agents/skills/herdr-config/SKILL.m
 if ( FAIL_CONFIG_MOVE=1 CONFIG_MOVE_TARGET="$root/skill-rollback/.config/herdr/config.toml"; export FAIL_CONFIG_MOVE CONFIG_MOVE_TARGET; install skill-rollback '' "$root/new" ); then fail 'config failure accepted'; fi
 [ "$(cat "$root/skill-rollback/.agents/skills/herdr-config/SKILL.md")" = 'old skill' ] || fail 'skill rollback failed'
 printf 'ok: skill provisioning, backup, symlink, fetch and rollback\n'
+
+# The README one-liner pipes the installer into bash. A full stream installs and
+# syncs; a truncated stream must fail to parse instead of running partially.
+mkdir -p "$root/piped" "$root/truncated"
+( UTILITY_CALLS="$root/piped.calls"; export UTILITY_CALLS
+    HOME="$root/piped" FETCH_SOURCE="$root/new" FETCH_FAIL=0 PATH="$root/bin:$PATH" bash < "$repo/install.sh" ) ||
+    fail 'piped install failed'
+assert_same "$root/new" "$root/piped/.config/herdr/config.toml"
+[ "$(cat "$root/piped.calls")" = sync ] || fail 'piped install did not run sync'
+head -n 40 "$repo/install.sh" | HOME="$root/truncated" FETCH_SOURCE="$root/new" PATH="$root/bin:$PATH" bash 2>/dev/null || :
+[ ! -e "$root/truncated/.config" ] && [ ! -e "$root/truncated/.local" ] || fail 'truncated piped installer ran partially'
+printf 'ok: piped bash install and truncated stream\n'

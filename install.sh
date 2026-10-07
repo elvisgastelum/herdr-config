@@ -1,6 +1,9 @@
 #!/bin/sh
 # Install the published Herdr config and sync utility without reading piped stdin,
 # then run sync to set up the managed checkout and its plugins.
+# The body is one brace group so `curl ... | bash` parses the whole script before
+# running any of it; a truncated download is a syntax error, not a partial install.
+{
 set -eu
 base=https://raw.githubusercontent.com/elvisgastelum/herdr-config/main
 if [ -n "${XDG_CONFIG_HOME:-}" ]; then
@@ -145,3 +148,5 @@ if ! "$utility_target" sync < /dev/null; then
     printf 'Config installed, but herdr-config sync failed, so plugins may not be set up. Fix the cause and rerun: %s sync\n' "$utility_target" >&2
     exit 1
 fi
+exit 0
+}
