@@ -1,0 +1,169 @@
+#!/bin/sh
+# List processes listening on network ports and kill them, for the Herdr
+# port-kill plugin. Sockets come from lsof field output (-F), never column scraping.
+set -eu
+
+lsof_bin=${PK_LSOF:-lsof}
+kill_wait=${PK_KILL_WAIT:-3}
+case $kill_wait in '' | *[!0-9]*) kill_wait=3 ;; esac
+
+die() { printf 'port-kill: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+usage() {
+    cat <<'USAGE'
+usage: port-kill <command>
+  list [port]              listening TCP/UDP sockets, optionally one port
+  kill [--force] <pid>...  send TERM, wait, report survivors;
+                           --force sends KILL to processes that survive TERM
+  ui                       interactive fzf picker (Tab select, Enter kill)
+USAGE
+}
+
+is_port() {
+    case $1 in '' | *[!0-9]* | 0*) return 1 ;; esac
+    [ "${#1}" -le 5 ] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+# A pid we may signal: numeric, above 1, and not this script or its parent.
+is_pid() {
+    case $1 in '' | *[!0-9]* | 0*) return 1 ;; esac
+    [ "${#1}" -le 10 ] && [ "$1" -gt 1 ] && [ "$1" -ne "$$" ] && [ "$1" -ne "$PPID" ]
+}
+
+# Print port, proto, pid, user, lsof command name (tab separated), one line per
+# listening socket, sorted by port and de-duplicated across IPv4/IPv6.
+sockets() {
+    command -v "$lsof_bin" > /dev/null 2>&1 || die "lsof is required to list listening ports ($lsof_bin not found)"
+    # lsof exits 1 when nothing matches, which is not an error here.
+    { "$lsof_bin" -nP -iTCP -sTCP:LISTEN -FpcLPn 2>/dev/null || :
+      "$lsof_bin" -nP -iUDP -FpcLPn 2>/dev/null || :; } |
+        awk -v want="${1:-}" -v OFS='\t' '
+            /^p/ { pid = substr($0, 2); cmd = ""; user = ""; next }
+            /^c/ { cmd = substr($0, 2); next }
+            /^L/ { user = substr($0, 2); next }
+            /^f/ { proto = ""; next }
+            /^P/ { proto = substr($0, 2); next }
+            /^n/ {
+                name = substr($0, 2)
+                if (name ~ /->/) next          # connected UDP socket, not a listener
+                port = name; sub(/.*:/, "", port)
+                if (port !~ /^[0-9]+$/ || (want != "" && port != want)) next
+                print port, proto, pid, (user == "" ? "?" : user), cmd
+            }' |
+        sort -t "$(printf '\t')" -k1,1n -k2,2 -k3,3n |
+        awk -F '\t' '!seen[$1 FS $2 FS $3]++'
+}
+
+cmd_list() {
+    if [ -n "${1:-}" ]; then is_port "$1" || die "invalid port: $1 (1-65535)"; fi
+    rows=$(sockets "${1:-}")
+    printf '%-6s %-5s %-7s %-12s %s\n' PORT PROTO PID USER COMMAND
+    [ -n "$rows" ] || return 0
+    printf '%s\n' "$rows" | while IFS=$(printf '\t') read -r port proto pid user name; do
+        # Prefer the full command line; fall back to lsof's short name.
+        full=$(ps -p "$pid" -o command= 2>/dev/null) || full=
+        printf '%-6s %-5s %-7s %-12s %s\n' "$port" "$proto" "$pid" "$user" "${full:-$name}" |
+            awk '{ print (length($0) > 160 ? substr($0, 1, 157) "..." : $0) }'
+    done
+}
+
+# Poll until every listed pid is gone or the timeout (in tenths) runs out.
+wait_gone() {
+    limit=$1 tick=0
+    shift
+    while [ "$tick" -lt "$limit" ]; do
+        alive=0
+        for pid; do kill -0 "$pid" 2>/dev/null && alive=1; done
+        [ "$alive" -eq 1 ] || return 0
+        sleep 0.1
+        tick=$((tick + 1))
+    done
+}
+
+cmd_kill() {
+    force=0 targets=
+    for arg; do
+        case $arg in
+            --force) force=1 ;;
+            *) is_pid "$arg" || die "invalid pid: '$arg' (must be numeric and greater than 1)"
+               targets="$targets $arg" ;;
+        esac
+    done
+    [ -n "$targets" ] || { usage >&2; exit 1; }
+    status=0 signalled=
+    for pid in $targets; do
+        if kill -TERM "$pid" 2>/dev/null; then
+            signalled="$signalled $pid"
+        else
+            printf 'pid %s: not signalled (no such process or permission denied)\n' "$pid"
+            status=1
+        fi
+    done
+    [ -n "$signalled" ] || return "$status"
+    # shellcheck disable=SC2086
+    wait_gone $((kill_wait * 10)) $signalled
+    survivors=
+    for pid in $signalled; do
+        if kill -0 "$pid" 2>/dev/null; then survivors="$survivors $pid"
+        else printf 'pid %s: killed (TERM)\n' "$pid"
+        fi
+    done
+    [ -n "$survivors" ] || return "$status"
+    if [ "$force" -eq 1 ]; then
+        for pid in $survivors; do kill -KILL "$pid" 2>/dev/null || :; done
+        # shellcheck disable=SC2086
+        wait_gone 20 $survivors
+    fi
+    for pid in $survivors; do
+        if [ "$force" -eq 1 ] && ! kill -0 "$pid" 2>/dev/null; then
+            printf 'pid %s: killed (KILL)\n' "$pid"
+        elif [ "$force" -eq 1 ]; then
+            printf 'pid %s: still alive after KILL\n' "$pid"; status=1
+        else
+            printf 'pid %s: still alive after TERM (retry with force)\n' "$pid"; status=1
+        fi
+    done
+    return "$status"
+}
+
+# ---------- interactive popup ----------
+
+pause() { printf '\nPress Enter to continue...'; read -r _ || :; }
+
+cmd_ui() {
+    command -v fzf > /dev/null 2>&1 || { printf 'port-kill: fzf is required for the UI\n' >&2; pause; exit 1; }
+    # fzf reload runs through a shell, so pass the script path by environment.
+    PK_SELF=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
+    export PK_SELF
+    while :; do
+        clear 2>/dev/null || :
+        rc=0
+        selection=$(cmd_list | fzf --multi --header-lines=1 --nth 1 --exact --prompt 'Port > ' \
+            --header 'Type a port to filter · Tab select · Enter kill · ctrl-r reload · Esc quit' \
+            --bind 'ctrl-r:reload(sh "$PK_SELF" list)' \
+            --preview 'ps -o pid,ppid,user,etime,command -p {3}' --preview-window 'down,30%,wrap') || rc=$?
+        case $rc in
+            0) ;;
+            1) continue ;;      # Enter with no matching row
+            *) return 0 ;;      # Esc or interrupt
+        esac
+        pids=$(printf '%s\n' "$selection" | awk '{ print $3 }' | sort -un | tr '\n' ' ')
+        count=$(printf '%s\n' $pids | wc -l | tr -d ' ')
+        printf '%s\n' "$selection"
+        printf '\nKill %s process(es)? [y/N/f=force] ' "$count"
+        read -r answer || return 0
+        # shellcheck disable=SC2086
+        case $answer in
+            y | Y | yes) ( cmd_kill $pids ) || :; pause ;;
+            f | F | force) ( cmd_kill --force $pids ) || :; pause ;;
+        esac
+    done
+}
+
+case ${1:-} in
+    list) shift; [ "$#" -le 1 ] || { usage >&2; exit 1; }; cmd_list "${1:-}" ;;
+    kill) shift; cmd_kill "$@" ;;
+    ui) cmd_ui ;;
+    -h | --help | help) usage ;;
+    *) usage >&2; exit 1 ;;
+esac

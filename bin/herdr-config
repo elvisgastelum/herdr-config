@@ -268,6 +268,7 @@ link_plugin() {
 status=0
 link_plugin elvisgastelum.port-forward port-forward || status=1
 link_plugin elvisgastelum.automatic-rename automatic-rename || status=1
+link_plugin elvisgastelum.port-kill port-kill || status=1
 # The upstream plugin renames the same tabs as the fork; report a leftover
 # registration without removing it.
 upstream=$(printf '%s\n' "$plugins" | jq -r \
