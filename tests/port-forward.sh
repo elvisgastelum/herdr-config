@@ -97,6 +97,33 @@ row 1 | grep -q 'stopped' || fail 'reused pid reported running'
 pf stop 1 || fail 'stop with reused pid failed'
 kill -0 "$decoy" 2>/dev/null || fail 'stop killed unrelated process'
 
+# Edit stops a running tunnel, saves the new spec under the same id, and
+# starts it again with the new configuration; a stopped forward stays stopped.
+pf start 1 > /dev/null
+oldpid=$(cat "$root/state/1.pid")
+pf edit 1 host1 L 8181 localhost:81 || fail 'edit running forward failed'
+! kill -0 "$oldpid" 2>/dev/null || fail 'edit left old tunnel running'
+alive 1 || fail 'edit did not restart tunnel'
+[ "$(cat "$root/state/1.pid")" != "$oldpid" ] || fail 'edit reused old tunnel'
+grep -q -- '-L 8181:localhost:81 -- host1$' "$calls" || fail 'edit ssh argv'
+grep -q "^1	1	host1	L	8181	localhost:81\$" "$specs" || fail 'edit did not save spec'
+row 1 | grep -q 'running' && row 1 | grep -q '8181' || fail 'edited list row'
+[ "$(wc -l < "$specs" | tr -d ' ')" -eq 2 ] || fail 'edit changed spec count'
+pf edit 1 host1 L 8181 localhost:81 > /dev/null || fail 'edit to same spec rejected'
+pf stop 1 > /dev/null
+before=$(starts host1)
+pf edit 1 host1 L 8080 localhost:80 || fail 'edit stopped forward failed'
+[ "$(starts host1)" -eq "$before" ] || fail 'edit started a stopped forward'
+row 1 | grep -q 'stopped' || fail 'edit changed stopped status'
+grep -q "^1	0	host1	L	8080	localhost:80\$" "$specs" || fail 'edit stopped spec'
+before=$(cat "$specs")
+for args in '1 host1 L 0 localhost:80' '1 host1 X 8080 localhost:80' '1 host1 R 9090 db:5432' \
+    '1 -evil L 8080 localhost:80' '42 host1 L 8080 localhost:80' '1 host1 L 8080'; do
+    # shellcheck disable=SC2086
+    if pf edit $args 2>/dev/null; then fail "edit accepted: $args"; fi
+done
+[ "$(cat "$specs")" = "$before" ] || fail 'rejected edit changed specs'
+
 # Restore starts enabled, not-running forwards only and tolerates failures.
 kill "$(cat "$root/state/2.pid")"
 sleep 1
@@ -128,4 +155,4 @@ pf add host2 L 6060 localhost:60 || fail 'add after remove failed'
 # Corrupt state is the only restore failure.
 printf 'garbage\n' >> "$specs"
 if pf restore > /dev/null 2>&1; then fail 'corrupt state accepted'; fi
-printf 'ok: add, validate, stop, start, remove, restore and failure detection\n'
+printf 'ok: add, validate, stop, start, edit, remove, restore and failure detection\n'

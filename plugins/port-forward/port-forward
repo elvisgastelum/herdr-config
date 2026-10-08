@@ -19,6 +19,8 @@ usage() {
 usage: port-forward <command>
   add <target> <L|R> <bind_port> <dest_host:dest_port>
         L = remote→local (ssh -L), R = local→remote (ssh -R)
+  edit <id> <target> <L|R> <bind_port> <dest_host:dest_port>
+        replaces a forward; a running forward is stopped and restarted
   list | start <id> | stop <id> | remove <id> | restore | ui
 USAGE
 }
@@ -135,19 +137,25 @@ EOF
     start_tunnel "$sid" "$target" "$dir" "$bind" "$dest"
 }
 
+# check_new <skip_id> <target> <dir> <bind> <dest>: validate a spec and reject
+# a duplicate target/direction/bind of any forward other than skip_id.
+check_new() {
+    is_name "$2" || die "invalid target: '$2'"
+    case $3 in L | R) ;; *) die "direction must be L (remote→local) or R (local→remote)" ;; esac
+    is_port "$4" || die "invalid bind port: $4 (1-65535)"
+    is_dest "$5" || die "invalid destination: $5 (host:port)"
+    if [ -f "$specs" ] && awk -F '\t' -v id="$1" -v t="$2" -v d="$3" -v b="$4" \
+        '$1 != id && $3 == t && $4 == d && $5 == b { found = 1 } END { exit !found }' "$specs"; then
+        die "duplicate forward: $2 $3 $4"
+    fi
+}
+
 cmd_add() {
     [ "$#" -eq 4 ] || { usage >&2; exit 1; }
     target=$1 dir=$2 bind=$3 dest=$4
-    is_name "$target" || die "invalid target: '$target'"
-    case $dir in L | R) ;; *) die "direction must be L (remote→local) or R (local→remote)" ;; esac
-    is_port "$bind" || die "invalid bind port: $bind (1-65535)"
-    is_dest "$dest" || die "invalid destination: $dest (host:port)"
     ensure_dirs
     check_specs
-    if [ -f "$specs" ] && awk -F '\t' -v t="$target" -v d="$dir" -v b="$bind" \
-        '$3 == t && $4 == d && $5 == b { found = 1 } END { exit !found }' "$specs"; then
-        die "duplicate forward: $target $dir $bind"
-    fi
+    check_new '' "$target" "$dir" "$bind" "$dest"
     id=$(cat "$counter" 2>/dev/null || echo 1)
     max=$( [ -f "$specs" ] && awk -F '\t' '$1 > m { m = $1 } END { print m + 0 }' "$specs" || echo 0)
     case $id in '' | *[!0-9]*) id=1 ;; esac
@@ -189,6 +197,24 @@ cmd_stop() {
     set_enabled "$1" 0
     stop_tunnel "$1"
     printf 'stopped forward %s\n' "$1"
+}
+
+# Stop the old tunnel if it runs, save the new spec under the same id and
+# enabled flag, then start the new configuration only if the old one ran.
+cmd_edit() {
+    [ "$#" -eq 5 ] || { usage >&2; exit 1; }
+    require_spec "$1"
+    id=$1 target=$2 dir=$3 bind=$4 dest=$5
+    check_new "$id" "$target" "$dir" "$bind" "$dest"
+    ensure_dirs
+    was_running=
+    if is_running "$id"; then was_running=1; stop_tunnel "$id"; fi
+    awk -F '\t' -v OFS='\t' -v id="$id" -v t="$target" -v d="$dir" -v b="$bind" -v x="$dest" \
+        '$1 == id { $3 = t; $4 = d; $5 = b; $6 = x } { print }' "$specs" | write_specs
+    printf 'edited forward %s: %s %s %s -> %s\n' "$id" "$target" "$(dir_label "$dir")" "$bind" "$dest"
+    [ -n "$was_running" ] || return 0
+    start_spec "$(spec_of "$id")"
+    printf 'restarted forward %s\n' "$id"
 }
 
 cmd_remove() {
@@ -267,17 +293,43 @@ ui_add() {
     pause
 }
 
+# Prompt for each field with the current value as the default.
+ui_edit() {
+    id=$(pick_forward Edit) || return 0
+    IFS=$tab read -r _ _ target dir bind dest <<EOF
+$(spec_of "$id")
+EOF
+    printf 'Editing forward %s (Enter keeps the current value)\n' "$id"
+    printf 'SSH target [%s]: ' "$target"
+    read -r new_target || return 0
+    new_dir=$(printf '%s\n' "$dir  keep $(dir_label "$dir")" \
+        'L  remote→local  (local port reaches a remote service, ssh -L)' \
+        'R  local→remote  (remote port reaches a local service, ssh -R)' |
+        fzf --prompt 'Direction > ') || return 0
+    new_dir=${new_dir%% *}
+    printf 'Bind port [%s]: ' "$bind"
+    read -r new_bind || return 0
+    printf 'Destination host [%s]: ' "${dest%:*}"
+    read -r dhost || return 0
+    printf 'Destination port [%s]: ' "${dest##*:}"
+    read -r dport || return 0
+    ( cmd_edit "$id" "${new_target:-$target}" "$new_dir" "${new_bind:-$bind}" \
+        "${dhost:-${dest%:*}}:${dport:-${dest##*:}}" ) || :
+    pause
+}
+
 cmd_ui() {
     command -v fzf > /dev/null 2>&1 || { printf 'port-forward: fzf is required for the UI\n' >&2; pause; exit 1; }
     while :; do
         clear 2>/dev/null || :
         listing=$state_dir/.ui-list
         cmd_list > "$listing" 2>&1 || :
-        action=$(printf '%s\n' Add Start Stop Remove Quit |
+        action=$(printf '%s\n' Add Edit Start Stop Remove Quit |
             fzf --prompt 'Port forwards > ' --no-sort --header 'Esc to quit' \
                 --preview "cat '$listing'" --preview-window 'up,70%,wrap') || return 0
         case $action in
             Add) ui_add ;;
+            Edit) ui_edit ;;
             Start) id=$(pick_forward Start) && { ( cmd_start "$id" ) || :; pause; } ;;
             Stop) id=$(pick_forward Stop) && { ( cmd_stop "$id" ) || :; pause; } ;;
             Remove)
@@ -295,6 +347,7 @@ case ${1:-} in
     list) cmd_list ;;
     start) cmd_start "${2:-}" ;;
     stop) cmd_stop "${2:-}" ;;
+    edit) shift; cmd_edit "$@" ;;
     remove) cmd_remove "${2:-}" ;;
     restore) cmd_restore ;;
     ui) ensure_dirs; cmd_ui ;;

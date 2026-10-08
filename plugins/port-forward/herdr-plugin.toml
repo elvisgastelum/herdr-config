@@ -1,6 +1,6 @@
 id = "elvisgastelum.port-forward"
 name = "Port Forward"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.9.0"
 description = "Manage SSH port forwards (ssh -L / ssh -R) from a Herdr popup"
 platforms = ["linux", "macos"]

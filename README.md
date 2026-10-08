@@ -35,6 +35,7 @@ Your terminal or desktop may intercept Alt-number keys before Herdr sees them. C
 
 - **Add** a remote→local forward (`ssh -L`, a remote port reachable on this host) or a local→remote forward (`ssh -R`, a local port reachable on the remote host). The target is a saved Herdr machine (`herdr machine list`) or a manually entered SSH target; ports are validated.
 - **Start** a stopped forward, **stop** a running one, or **remove** one. Stop keeps the saved forward but disables its restore; remove stops a running tunnel and deletes the saved forward.
+- **Edit** a forward's target, direction, bind port, or destination; each prompt defaults to the current value. Edit keeps the forward's ID and stopped/started state: a running tunnel is stopped, the new settings are saved, and the tunnel starts again with them. A stopped forward stays stopped. From a shell: `port-forward edit <id> <target> <L|R> <bind_port> <dest_host:dest_port>`.
 
 Enabled forwards are restored by the plugin's startup hook each time the Herdr server starts. Restore runs without prompting and records failures rather than waiting for input.
 
